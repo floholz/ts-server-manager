@@ -120,10 +120,11 @@ Four loosely-coupled internal packages:
 
 ## Versioning
 
-Released versions are pushed to GitHub Container Registry on each `v*` git tag:
+Released versions are pushed to GitHub Container Registry on each `v*` git tag.
+A push of `v1.3.7` produces:
 
-- `ghcr.io/floholz/ts-server-manager:vX.Y.Z` — exact tag
-- `ghcr.io/floholz/ts-server-manager:X.Y.Z`  — semver-stripped
+- `ghcr.io/floholz/ts-server-manager:1.3.7`  — exact version
+- `ghcr.io/floholz/ts-server-manager:1`      — major-version channel
 - `ghcr.io/floholz/ts-server-manager:latest` — last published version
 
 ## License
