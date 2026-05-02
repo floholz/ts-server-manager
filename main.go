@@ -109,8 +109,34 @@ func newLogger(level string) *slog.Logger {
 	)
 }
 
-// runHealthcheck is implemented in Task 9. Stub for now.
+// runHealthcheck issues a single GET /readyz against the local server and
+// returns 0 on 200, 1 otherwise. Used by the Dockerfile HEALTHCHECK.
 func runHealthcheck() int {
-	fmt.Fprintln(os.Stderr, "healthcheck: not implemented yet")
-	return 1
+	addr := os.Getenv("HTTP_ADDR")
+	if addr == "" {
+		addr = ":9988"
+	}
+	// HTTP_ADDR may be ":9988" or "0.0.0.0:9988"; normalise to a localhost URL.
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck: invalid HTTP_ADDR:", err)
+		return 1
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	url := fmt.Sprintf("http://%s/readyz", net.JoinHostPort(host, port))
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck: status %d\n", resp.StatusCode)
+		return 1
+	}
+	return 0
 }
