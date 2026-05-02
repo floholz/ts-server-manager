@@ -1,0 +1,9 @@
+services:
+  ts-server-manager:
+    build: .
+    image: ts-server-manager:latest
+    container_name: ts-server-manager
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "9988:9988"
