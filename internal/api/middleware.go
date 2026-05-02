@@ -40,7 +40,9 @@ func RecoverAndLog(logger *slog.Logger) func(http.Handler) http.Handler {
 						"stack", string(debug.Stack()),
 					)
 					if !rw.wroteHeader {
-						http.Error(rw, `{"error":"internal error"}`, http.StatusInternalServerError)
+						rw.Header().Set("Content-Type", "application/json")
+						rw.WriteHeader(http.StatusInternalServerError)
+						_, _ = rw.Write([]byte(`{"error":"internal error"}` + "\n"))
 					}
 				}
 				logger.Info("http_request",
@@ -76,6 +78,7 @@ func (s *statusRecorder) WriteHeader(code int) {
 
 func (s *statusRecorder) Write(b []byte) (int, error) {
 	if !s.wroteHeader {
+		s.status = http.StatusOK
 		s.wroteHeader = true
 	}
 	return s.ResponseWriter.Write(b)

@@ -3,6 +3,7 @@ package ts
 import (
 	"context"
 	"fmt"
+	"time"
 
 	ts3 "github.com/multiplay/go-ts3"
 	"golang.org/x/crypto/ssh"
@@ -52,10 +53,13 @@ func (sshDialer) dial(ctx context.Context, cfg Config) (transport, error) {
 	}
 
 	addr := cfg.Host + ":" + cfg.Port
+	// The wrapper owns the keepalive (a real `version` ServerQuery from
+	// runConnected). Set the library keepalive to a long interval so it
+	// doesn't double up with whitespace pings on the same wire.
 	c, err := ts3.NewClient(addr,
 		ts3.SSH(sshCfg),
 		ts3.Timeout(cfg.DialTimeout),
-		ts3.KeepAlive(cfg.KeepAliveInterval),
+		ts3.KeepAlive(24*time.Hour),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial ts3: %w", err)

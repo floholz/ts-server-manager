@@ -178,5 +178,26 @@ func TestUpdateCheck_BadRefreshParam(t *testing.T) {
 	}
 }
 
+func TestRecoverAndLog_PanicReturnsJSON500(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := RecoverAndLog(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	}))
+	rr := doGet(t, h, "/anything")
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status: got %d, want 500", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type: got %q, want application/json", ct)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not valid JSON: %v; raw=%q", err, rr.Body.String())
+	}
+	if body["error"] != "internal error" {
+		t.Errorf("error field: got %v", body["error"])
+	}
+}
+
 // silence unused-import warnings if test set shrinks during refactor.
 var _ = errors.New
