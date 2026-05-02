@@ -1,0 +1,59 @@
+services:
+    ts_db:
+        container_name: ts_db
+        image: mariadb
+        restart: unless-stopped
+        ports:
+            - 3306:3306
+        environment:
+            MYSQL_ROOT_PASSWORD: ts_db_pw
+            MYSQL_DATABASE: ts_db
+        healthcheck:
+            test: [ "CMD", "healthcheck.sh", "--su-mysql", "--connect", "--innodb_initialized" ]
+            start_period: 1m
+            interval: 5s
+            timeout: 5s
+            retries: 10
+#        networks:
+#            - ts_net
+        volumes:
+            - ts_db_data:/var/lib/mysql/
+
+    ts_server:
+        container_name: ts_server
+        image: teamspeaksystems/teamspeak6-server:v6.0.0-beta8
+        restart: unless-stopped
+        depends_on:
+            ts_db:
+                condition: service_healthy
+        ports:
+            - 9987:9987/udp
+            - 10080:10080
+            - 10022:10022
+            - 30033:30033
+        environment:
+            TSSERVER_DATABASE_PLUGIN: mariadb
+            TSSERVER_DATABASE_SQL_CREATE_PATH: create_mariadb
+            TSSERVER_DATABASE_HOST: ts_db
+            TSSERVER_DATABASE_PORT: 3306
+            TSSERVER_DATABASE_USERNAME: root
+            TSSERVER_DATABASE_PASSWORD: ts_db_pw
+            TSSERVER_DATABASE_NAME: ts_db
+            TSSERVER_LICENSE_ACCEPTED: accept
+            TSSERVER_QUERY_HTTP_ENABLED: true
+            TSSERVER_QUERY_SSH_ENABLED: true
+#        networks:
+#            - ts_net
+        volumes:
+            - ts_server_data:/var/tsserver
+            - ts_server_tmp:/tmp
+        #user: 1027:65536
+
+#networks:
+#    ts_net:
+#        driver: bridge
+
+volumes:
+    ts_db_data:
+    ts_server_data:
+    ts_server_tmp:
