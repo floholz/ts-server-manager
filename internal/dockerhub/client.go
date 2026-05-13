@@ -45,7 +45,14 @@ type Result struct {
 	UpdateAvailable bool      `json:"update_available"`
 	CheckedAt       time.Time `json:"checked_at"`
 	Note            string    `json:"note,omitempty"`
+	// StatusMsg is a single-string summary suitable for embedding in
+	// notification systems whose templates can only surface the queried
+	// JSON value (e.g. Uptime Kuma JSON-Query monitors).
+	// Sentinel "up-to-date" when no update; "<running> → <latest>" otherwise.
+	StatusMsg string `json:"status_msg"`
 }
+
+const statusMsgUpToDate = "up-to-date"
 
 var (
 	ErrUpstreamUnreachable = errors.New("dockerhub: upstream unreachable")
@@ -95,9 +102,11 @@ func (c *Client) Check(ctx context.Context, runningVersion string, forceRefresh 
 		out.VersionLatest = ""
 		out.UpdateAvailable = false
 		out.Note = "running version not found on docker hub"
+		out.StatusMsg = statusMsgUpToDate
 	case digestRunning == digestLatest:
 		out.VersionLatest = runningVersion
 		out.UpdateAvailable = false
+		out.StatusMsg = statusMsgUpToDate
 	default:
 		out.UpdateAvailable = true
 		name, err := c.resolveLatestName(ctx, digestLatest)
@@ -105,6 +114,11 @@ func (c *Client) Check(ctx context.Context, runningVersion string, forceRefresh 
 			return Result{}, err
 		}
 		out.VersionLatest = name
+		if name != "" {
+			out.StatusMsg = fmt.Sprintf("%s → %s", runningVersion, name)
+		} else {
+			out.StatusMsg = fmt.Sprintf("%s → newer image", runningVersion)
+		}
 	}
 
 	c.cacheStore(runningVersion, out)

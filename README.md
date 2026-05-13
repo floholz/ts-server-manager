@@ -37,11 +37,14 @@ A small Go sidecar that holds a long-lived [TeamSpeak 3 ServerQuery](https://yat
   "version_running":  "6.0.0-beta9",
   "version_latest":   "6.0.0-beta10",
   "update_available": true,
-  "checked_at":       "2026-05-02T12:34:56Z"
+  "checked_at":       "2026-05-02T12:34:56Z",
+  "status_msg":       "6.0.0-beta9 → 6.0.0-beta10"
 }
 ```
 
 When the running version's tag isn't published on Docker Hub (e.g. custom builds), the response includes a `note` field and `update_available` is `false`.
+
+`status_msg` is `"up-to-date"` when no update is available, and `"<running> → <latest>"` otherwise. It is meant for notification systems (e.g. Uptime Kuma's JSON-Query monitor) whose templates can only surface the queried JSON value — query `$.status_msg` and compare against `"up-to-date"` to get a one-line update summary embedded in the failure message.
 
 ## Quick start
 

@@ -95,6 +95,9 @@ func TestCheck_DigestsMatchNoUpdate(t *testing.T) {
 	if r.VersionLatest != "6.0.0-beta9" {
 		t.Errorf("version_latest: got %q, want %q", r.VersionLatest, "6.0.0-beta9")
 	}
+	if r.StatusMsg != "up-to-date" {
+		t.Errorf("status_msg: got %q, want %q", r.StatusMsg, "up-to-date")
+	}
 	if stub.calls.Load() != 2 {
 		t.Errorf("expected 2 calls (no tag list), got %d", stub.calls.Load())
 	}
@@ -123,6 +126,9 @@ func TestCheck_DigestsDiffer_TagListResolvesLatestName(t *testing.T) {
 	if r.VersionLatest != "6.0.0-beta9" {
 		t.Errorf("version_latest: got %q, want %q", r.VersionLatest, "6.0.0-beta9")
 	}
+	if want := "6.0.0-beta8 → 6.0.0-beta9"; r.StatusMsg != want {
+		t.Errorf("status_msg: got %q, want %q", r.StatusMsg, want)
+	}
 	if stub.calls.Load() != 3 {
 		t.Errorf("expected 3 calls (tag list on miss), got %d", stub.calls.Load())
 	}
@@ -148,6 +154,37 @@ func TestCheck_RunningVersionNotOnHub(t *testing.T) {
 	}
 	if r.Note == "" {
 		t.Error("note should be set on 404")
+	}
+	if r.StatusMsg != "up-to-date" {
+		t.Errorf("status_msg on 404: got %q, want %q", r.StatusMsg, "up-to-date")
+	}
+}
+
+func TestCheck_UpdateAvailable_LatestNameUnresolved(t *testing.T) {
+	stub := newStub()
+	stub.set("/v2/repositories/teamspeaksystems/teamspeak6-server/tags/latest", 200, tagJSON("latest", "sha256:newer"))
+	stub.set("/v2/repositories/teamspeaksystems/teamspeak6-server/tags/6.0.0-beta8", 200, tagJSON("6.0.0-beta8", "sha256:older"))
+	// Tag list does not contain the matching digest under any non-"latest" name.
+	stub.set("/v2/repositories/teamspeaksystems/teamspeak6-server/tags/", 200, tagListJSON([]map[string]string{
+		{"name": "latest", "digest": "sha256:newer"},
+		{"name": "6.0.0-beta8", "digest": "sha256:older"},
+	}))
+	srv := httptest.NewServer(stub.handler())
+	t.Cleanup(srv.Close)
+
+	c := newTestClient(t, srv.URL, time.Minute)
+	r, err := c.Check(context.Background(), "6.0.0-beta8", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !r.UpdateAvailable {
+		t.Error("update_available should be true")
+	}
+	if r.VersionLatest != "" {
+		t.Errorf("version_latest: got %q, want empty", r.VersionLatest)
+	}
+	if want := "6.0.0-beta8 → newer image"; r.StatusMsg != want {
+		t.Errorf("status_msg: got %q, want %q", r.StatusMsg, want)
 	}
 }
 
