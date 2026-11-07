@@ -2,6 +2,7 @@ package ts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,29 +10,15 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// transport is the minimal surface the Client needs from a connected
-// ServerQuery session. Tests substitute a fake.
+// transport is the minimal surface needed from a connected ServerQuery
+// session: send one raw command line, get its raw data lines back. Tests
+// substitute a fake.
+//
+// Implementations return a *QueryError for error replies from the server
+// and any other error for transport failures (I/O, timeout, closed).
 type transport interface {
-	Version() (VersionInfo, error)
-	Whoami() (whoami, error)
-	ServerInfo() (rawServerInfo, error)
+	Exec(line string) ([]string, error)
 	Close() error
-}
-
-type whoami struct {
-	ServerStatus    string
-	ServerID        int
-	ClientLoginName string
-}
-
-type rawServerInfo struct {
-	Name          string
-	UptimeSeconds int64
-	ClientsOnline int
-	ClientsMax    int
-	Status        string
-	Version       string
-	Platform      string
 }
 
 // dialer abstracts the act of opening a connected transport. Tests
@@ -51,8 +38,8 @@ func (sshDialer) dial(ctx context.Context, cfg Config) (transport, error) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         cfg.DialTimeout,
 	}
-
 	addr := cfg.Host + ":" + cfg.Port
+
 	// The wrapper owns the keepalive (a real `version` ServerQuery from
 	// runConnected). Set the library keepalive to a long interval so it
 	// doesn't double up with whitespace pings on the same wire.
@@ -64,14 +51,14 @@ func (sshDialer) dial(ctx context.Context, cfg Config) (transport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial ts3: %w", err)
 	}
-
-	if err := c.Use(cfg.SID); err != nil {
+	tr := &ts3Transport{c: c}
+	use := NewCommand("use").Arg("sid", cfg.SID)
+	if _, err := execRows(tr, use); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("use sid=%d: %w", cfg.SID, err)
 	}
-
 	_ = ctx // ts3 library doesn't accept a Context yet; reserved for future use.
-	return &ts3Transport{c: c}, nil
+	return tr, nil
 }
 
 // ts3Transport adapts *ts3.Client to the transport interface.
@@ -79,42 +66,51 @@ type ts3Transport struct {
 	c *ts3.Client
 }
 
-func (t *ts3Transport) Version() (VersionInfo, error) {
-	v, err := t.c.Version()
+func (t *ts3Transport) Exec(line string) ([]string, error) {
+	lines, err := t.c.Exec(line)
 	if err != nil {
-		return VersionInfo{}, err
+		var te *ts3.Error
+		if errors.As(err, &te) {
+			return nil, queryErrorFrom(te)
+		}
+		return nil, err
 	}
-	return VersionInfo{Version: v.Version, Platform: v.Platform, Build: v.Build}, nil
-}
-
-func (t *ts3Transport) Whoami() (whoami, error) {
-	w, err := t.c.Whoami()
-	if err != nil {
-		return whoami{}, err
-	}
-	return whoami{
-		ServerStatus:    w.ServerStatus,
-		ServerID:        w.ServerID,
-		ClientLoginName: w.ClientLoginName,
-	}, nil
-}
-
-func (t *ts3Transport) ServerInfo() (rawServerInfo, error) {
-	s, err := t.c.Server.Info()
-	if err != nil {
-		return rawServerInfo{}, err
-	}
-	return rawServerInfo{
-		Name:          s.Name,
-		UptimeSeconds: int64(s.Uptime),
-		ClientsOnline: s.ClientsOnline,
-		ClientsMax:    s.MaxClients,
-		Status:        s.Status,
-		Version:       s.Version,
-		Platform:      s.Platform,
-	}, nil
+	return lines, nil
 }
 
 func (t *ts3Transport) Close() error {
 	return t.c.Close()
+}
+
+func queryErrorFrom(te *ts3.Error) *QueryError {
+	qe := &QueryError{ID: te.ID, Msg: te.Msg}
+	if v, ok := te.Details["extra_msg"]; ok {
+		qe.ExtraMsg = fmt.Sprint(v)
+	}
+	if v, ok := te.Details["failed_permid"].(int); ok {
+		qe.FailedPermID = v
+	}
+	return qe
+}
+
+// execRows runs cmd on tr and parses the response. An "empty result set"
+// reply becomes zero rows. QueryErrors are annotated with the command name.
+func execRows(tr transport, cmd *Command) ([]Row, error) {
+	return execLine(tr, cmd.String(), cmd.Name())
+}
+
+func execLine(tr transport, line, name string) ([]Row, error) {
+	lines, err := tr.Exec(line)
+	if err != nil {
+		var qe *QueryError
+		if errors.As(err, &qe) {
+			if qe.ID == ErrIDEmptyResult {
+				return nil, nil
+			}
+			qe.Command = name
+			return nil, qe
+		}
+		return nil, err
+	}
+	return ParseRows(lines), nil
 }

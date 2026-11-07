@@ -93,63 +93,59 @@ func (c *Client) IsConnected() bool {
 	return c.tr != nil
 }
 
+// Exec runs a single command on the live connection and returns its rows.
+//
+// A *QueryError (the server rejected the command) is returned as is and
+// leaves the connection up. Any other failure drops the connection,
+// triggers a reconnect, and is returned wrapped in ErrUnavailable.
+func (c *Client) Exec(cmd *Command) ([]Row, error) {
+	var rows []Row
+	err := c.withTransport(cmd.Name(), func(exec execFunc) error {
+		var err error
+		rows, err = exec(cmd)
+		return err
+	})
+	return rows, err
+}
+
 // Version returns the TS version metadata, querying the live connection.
-// Returns ErrUnavailable if not connected or the call fails at the
-// transport layer.
 func (c *Client) Version() (VersionInfo, error) {
 	var v VersionInfo
-	err := c.withTransport("Version", func(tr transport) error {
+	err := c.withTransport("Version", func(exec execFunc) error {
 		var err error
-		v, err = tr.Version()
-		if err != nil {
-			return fmt.Errorf("version: %w", err)
-		}
-		return nil
+		v, err = queryVersion(exec)
+		return err
 	})
 	return v, err
 }
 
 // ServerInfo aggregates `version`, `whoami`, and `serverinfo` into the
 // public ServerInfo type. The three commands run back to back under one
-// lock. ErrUnavailable is returned when not connected or any call fails at
-// the transport layer.
+// lock.
 func (c *Client) ServerInfo() (ServerInfo, error) {
 	var out ServerInfo
-	err := c.withTransport("ServerInfo", func(tr transport) error {
-		v, err := tr.Version()
-		if err != nil {
-			return fmt.Errorf("version: %w", err)
-		}
-		w, err := tr.Whoami()
-		if err != nil {
-			return fmt.Errorf("whoami: %w", err)
-		}
-		si, err := tr.ServerInfo()
-		if err != nil {
-			return fmt.Errorf("serverinfo: %w", err)
-		}
-		out = ServerInfo{
-			Version:       v.Version,
-			Platform:      v.Platform,
-			Build:         v.Build,
-			SID:           w.ServerID,
-			ServerStatus:  w.ServerStatus,
-			ServerName:    si.Name,
-			UptimeSeconds: si.UptimeSeconds,
-			ClientsOnline: si.ClientsOnline,
-			ClientsMax:    si.ClientsMax,
-			LoginName:     w.ClientLoginName,
-		}
-		return nil
+	err := c.withTransport("ServerInfo", func(exec execFunc) error {
+		var err error
+		out, err = queryServerInfo(exec)
+		return err
 	})
 	return out, err
 }
 
 // withTransport runs fn against the current transport while holding callMu,
-// so no other command can be in flight on the wire. If fn fails, the
-// transport is dropped and the connect loop is signalled to reconnect; the
-// error is returned wrapped in ErrUnavailable.
-func (c *Client) withTransport(where string, fn func(transport) error) error {
+// so no other command can be in flight on the wire.
+//
+// Error handling:
+//   - not connected: ErrUnavailable.
+//   - *QueryError: the server answered and rejected the command. The
+//     connection is in a known-good state, so it is kept and the error is
+//     returned unchanged.
+//   - anything else (I/O error, timeout, closed connection): the transport
+//     is dropped, the connect loop is signalled to reconnect, and the error
+//     is returned wrapped in ErrUnavailable. Timeouts count as transport
+//     failures because a late reply would otherwise be delivered to the
+//     next caller.
+func (c *Client) withTransport(where string, fn func(execFunc) error) error {
 	c.callMu.Lock()
 	defer c.callMu.Unlock()
 
@@ -157,11 +153,16 @@ func (c *Client) withTransport(where string, fn func(transport) error) error {
 	if tr == nil {
 		return ErrUnavailable
 	}
-	if err := fn(tr); err != nil {
-		c.markUnavailable(tr, where, err)
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	exec := func(cmd *Command) ([]Row, error) { return execRows(tr, cmd) }
+	err := fn(exec)
+	if err == nil {
+		return nil
 	}
-	return nil
+	if IsQueryError(err) {
+		return err
+	}
+	c.markUnavailable(tr, where, err)
+	return fmt.Errorf("%w: %v", ErrUnavailable, err)
 }
 
 func (c *Client) currentTransport() transport {
@@ -248,11 +249,11 @@ func (c *Client) runConnected(ctx context.Context) {
 		case <-t.C:
 			// The keepalive goes through withTransport like any other
 			// command, so it can never interleave with a handler call.
-			err := c.withTransport("keepalive", func(tr transport) error {
-				_, err := tr.Version()
+			err := c.withTransport("keepalive", func(exec execFunc) error {
+				_, err := queryVersion(exec)
 				return err
 			})
-			if err != nil {
+			if err != nil && !IsQueryError(err) {
 				return
 			}
 		}

@@ -3,39 +3,77 @@ package ts
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// fakeTransport is a programmable transport for state-machine tests.
+// fakeTransport replays canned raw responses keyed by command name. It
+// records every line sent and can inject errors per command.
 type fakeTransport struct {
-	mu          sync.Mutex
-	versionResp VersionInfo
-	versionErr  error
-	whoamiResp  whoami
-	whoamiErr   error
-	siResp      rawServerInfo
-	siErr       error
-	closed      bool
+	mu        sync.Mutex
+	responses map[string][]string
+	errs      map[string]error
+	sent      []string
+	closed    bool
+
+	// onExec, if set, runs (outside mu) before each command is answered.
+	onExec func(line string)
 }
 
-func (f *fakeTransport) Version() (VersionInfo, error) {
+func newFakeTransport() *fakeTransport {
+	return &fakeTransport{
+		responses: map[string][]string{
+			"version": {`version=6.0.0-beta13.1 build=1758000000 platform=Linux`},
+			"whoami": {`virtualserver_status=online virtualserver_id=1 virtualserver_unique_identifier=abc= ` +
+				`client_channel_id=1 client_nickname=serveradmin client_database_id=1 client_login_name=serveradmin`},
+			"serverinfo": {`virtualserver_name=Example\sTS virtualserver_uptime=123456 ` +
+				`virtualserver_clientsonline=3 virtualserver_maxclients=32 virtualserver_status=online`},
+		},
+		errs: map[string]error{},
+	}
+}
+
+func (f *fakeTransport) setErr(cmd string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.versionResp, f.versionErr
+	f.errs[cmd] = err
 }
-func (f *fakeTransport) Whoami() (whoami, error) {
+
+func (f *fakeTransport) setResponse(cmd string, lines ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.whoamiResp, f.whoamiErr
+	f.responses[cmd] = lines
 }
-func (f *fakeTransport) ServerInfo() (rawServerInfo, error) {
+
+func (f *fakeTransport) sentLines() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.siResp, f.siErr
+	return append([]string(nil), f.sent...)
 }
+
+func (f *fakeTransport) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+func (f *fakeTransport) Exec(line string) ([]string, error) {
+	if f.onExec != nil {
+		f.onExec(line)
+	}
+	name, _, _ := strings.Cut(line, " ")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, line)
+	if err := f.errs[name]; err != nil {
+		return nil, err
+	}
+	return f.responses[name], nil
+}
+
 func (f *fakeTransport) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -49,6 +87,7 @@ type fakeDialer struct {
 	queue []dialResult
 	calls atomic.Int32
 }
+
 type dialResult struct {
 	t   transport
 	err error
@@ -78,25 +117,28 @@ func newTestClient(d dialer) *Client {
 	}, d)
 }
 
-func TestClient_ConnectsAndIsReady(t *testing.T) {
-	tr := &fakeTransport{versionResp: VersionInfo{Version: "6.0.0-beta9"}}
+// startConnected starts a client on tr and waits until it is connected.
+func startConnected(t *testing.T, tr transport) (*Client, *fakeDialer) {
+	t.Helper()
 	d := &fakeDialer{queue: []dialResult{{t: tr}}}
 	c := newTestClient(d)
-
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	c.Start(ctx)
-
 	if !waitFor(100*time.Millisecond, c.IsConnected) {
 		t.Fatal("client never reported connected")
 	}
+	return c, d
+}
+
+func TestClient_ConnectsAndIsReady(t *testing.T) {
+	startConnected(t, newFakeTransport())
 }
 
 func TestClient_ReconnectsAfterDialError(t *testing.T) {
-	tr := &fakeTransport{}
 	d := &fakeDialer{queue: []dialResult{
 		{err: errors.New("boom")},
-		{t: tr},
+		{t: newFakeTransport()},
 	}}
 	c := newTestClient(d)
 
@@ -113,8 +155,9 @@ func TestClient_ReconnectsAfterDialError(t *testing.T) {
 }
 
 func TestClient_KeepaliveFailureTriggersReconnect(t *testing.T) {
-	first := &fakeTransport{versionErr: errors.New("io: broken pipe")}
-	second := &fakeTransport{} // healthy
+	first := newFakeTransport()
+	first.setErr("version", errors.New("io: broken pipe"))
+	second := newFakeTransport() // healthy
 	d := &fakeDialer{queue: []dialResult{{t: first}, {t: second}}}
 	c := newTestClient(d)
 
@@ -128,40 +171,126 @@ func TestClient_KeepaliveFailureTriggersReconnect(t *testing.T) {
 	}) {
 		t.Fatal("client did not reconnect after keepalive failure")
 	}
-	if !first.closed {
+	if !first.isClosed() {
 		t.Error("first transport should have been closed after failure")
 	}
 }
 
-func TestClient_HandlerErrorMarksDisconnected(t *testing.T) {
-	tr := &fakeTransport{}
-	d := &fakeDialer{queue: []dialResult{{t: tr}}}
-	c := newTestClient(d)
+func TestClient_TransportErrorMarksDisconnected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"io error", errors.New("io: connection reset")},
+		// A timed-out reply may still arrive later and be read by the next
+		// caller, so timeouts must drop the connection too.
+		{"timeout", errors.New("timeout")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := newFakeTransport()
+			c, _ := startConnected(t, tr)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.Start(ctx)
+			tr.setErr("version", tc.err)
+			_, err := c.Version()
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("expected ErrUnavailable, got %v", err)
+			}
+			if !waitFor(100*time.Millisecond, func() bool { return !c.IsConnected() }) {
+				t.Fatal("client should report disconnected after transport error")
+			}
+		})
+	}
+}
 
-	if !waitFor(100*time.Millisecond, c.IsConnected) {
-		t.Fatal("client never reported connected")
+func TestClient_QueryErrorKeepsConnection(t *testing.T) {
+	tr := newFakeTransport()
+	c, d := startConnected(t, tr)
+
+	tr.setErr("channelinfo", &QueryError{ID: ErrIDInvalidChannel, Msg: "invalid channelID"})
+	_, err := c.Exec(NewCommand("channelinfo").Arg("cid", 99))
+
+	var qe *QueryError
+	if !errors.As(err, &qe) {
+		t.Fatalf("expected *QueryError, got %T: %v", err, err)
+	}
+	if qe.ID != ErrIDInvalidChannel || qe.Command != "channelinfo" {
+		t.Errorf("unexpected QueryError: %+v", qe)
+	}
+	if errors.Is(err, ErrUnavailable) {
+		t.Error("query error must not be reported as ErrUnavailable")
 	}
 
-	// Inject a transport error into the next call.
-	tr.mu.Lock()
-	tr.versionErr = errors.New("io: connection reset")
-	tr.mu.Unlock()
-
-	_, err := c.Version()
-	if !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("expected ErrUnavailable, got %v", err)
+	// Give a would-be reconnect a chance to happen, then assert it didn't.
+	time.Sleep(30 * time.Millisecond)
+	if !c.IsConnected() {
+		t.Error("query error must not drop the connection")
 	}
-	if !waitFor(100*time.Millisecond, func() bool { return !c.IsConnected() }) {
-		t.Fatal("client should report disconnected after transport error")
+	if tr.isClosed() {
+		t.Error("query error must not close the transport")
+	}
+	if n := d.calls.Load(); n != 1 {
+		t.Errorf("expected exactly 1 dial, got %d", n)
+	}
+}
+
+func TestClient_EmptyResultSetIsZeroRows(t *testing.T) {
+	tr := newFakeTransport()
+	c, _ := startConnected(t, tr)
+
+	tr.setErr("channelgrouplist", &QueryError{ID: ErrIDEmptyResult, Msg: "database empty result set"})
+	rows, err := c.Exec(NewCommand("channelgrouplist"))
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected zero rows, got %v", rows)
+	}
+}
+
+func TestClient_ExecSendsEncodedCommandAndParsesRows(t *testing.T) {
+	tr := newFakeTransport()
+	c, _ := startConnected(t, tr)
+
+	tr.setResponse("channelfind", `cid=1 channel_name=Lobby|cid=4 channel_name=AFK\sRoom`)
+	rows, err := c.Exec(NewCommand("channelfind").Arg("pattern", "a b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[1]["channel_name"] != "AFK Room" || rows[1].IntOr("cid", 0) != 4 {
+		t.Fatalf("unexpected rows: %v", rows)
+	}
+
+	var found bool
+	for _, l := range tr.sentLines() {
+		if l == `channelfind pattern=a\sb` {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("encoded command not sent; sent: %q", tr.sentLines())
+	}
+}
+
+func TestClient_ServerInfoParsesResponses(t *testing.T) {
+	c, _ := startConnected(t, newFakeTransport())
+
+	si, err := c.ServerInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ServerInfo{
+		Version: "6.0.0-beta13.1", Platform: "Linux", Build: 1758000000,
+		SID: 1, ServerStatus: "online", ServerName: "Example TS",
+		UptimeSeconds: 123456, ClientsOnline: 3, ClientsMax: 32,
+		LoginName: "serveradmin",
+	}
+	if si != want {
+		t.Errorf("got  %+v\nwant %+v", si, want)
 	}
 }
 
 func TestClient_ContextCancelExits(t *testing.T) {
-	tr := &fakeTransport{}
+	tr := newFakeTransport()
 	d := &fakeDialer{queue: []dialResult{{t: tr}}}
 	c := newTestClient(d)
 
@@ -176,63 +305,28 @@ func TestClient_ContextCancelExits(t *testing.T) {
 	if !waitFor(100*time.Millisecond, func() bool { return !c.IsConnected() }) {
 		t.Fatal("client did not disconnect after context cancel")
 	}
-	if !tr.closed {
+	if !tr.isClosed() {
 		t.Error("transport not closed on shutdown")
 	}
 }
 
-// waitFor polls cond every 5ms up to d. Returns true if cond ever returned true.
-func waitFor(d time.Duration, cond func() bool) bool {
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return true
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return cond()
-}
-
-// overlapTransport records whether two commands were ever in flight at the
-// same time. The real ts3.Client shares one response channel across callers,
-// so any overlap would let callers receive each other's replies.
-type overlapTransport struct {
-	fakeTransport
-	inFlight atomic.Int32
-	overlap  atomic.Bool
-	calls    atomic.Int32
-}
-
-func (o *overlapTransport) enter() {
-	if o.inFlight.Add(1) > 1 {
-		o.overlap.Store(true)
-	}
-	o.calls.Add(1)
-	time.Sleep(time.Millisecond) // widen the race window
-}
-
-func (o *overlapTransport) leave() { o.inFlight.Add(-1) }
-
-func (o *overlapTransport) Version() (VersionInfo, error) {
-	o.enter()
-	defer o.leave()
-	return o.fakeTransport.Version()
-}
-
-func (o *overlapTransport) Whoami() (whoami, error) {
-	o.enter()
-	defer o.leave()
-	return o.fakeTransport.Whoami()
-}
-
-func (o *overlapTransport) ServerInfo() (rawServerInfo, error) {
-	o.enter()
-	defer o.leave()
-	return o.fakeTransport.ServerInfo()
-}
-
+// The real ts3.Client shares one response channel across callers, so any
+// overlap would let callers receive each other's replies.
 func TestClient_ConcurrentCallsAreSerialized(t *testing.T) {
-	tr := &overlapTransport{}
+	var inFlight atomic.Int32
+	var overlap atomic.Bool
+	var calls atomic.Int32
+
+	tr := newFakeTransport()
+	tr.onExec = func(string) {
+		if inFlight.Add(1) > 1 {
+			overlap.Store(true)
+		}
+		calls.Add(1)
+		time.Sleep(time.Millisecond) // widen the race window
+		inFlight.Add(-1)
+	}
+
 	d := &fakeDialer{queue: []dialResult{{t: tr}}}
 	c := newWithDialer(Config{
 		Host: "x", Port: "1", User: "u", Password: "p", SID: 1,
@@ -263,27 +357,30 @@ func TestClient_ConcurrentCallsAreSerialized(t *testing.T) {
 	}
 	wg.Wait()
 
-	if tr.overlap.Load() {
+	if overlap.Load() {
 		t.Fatal("two ServerQuery commands were in flight concurrently")
 	}
-	if tr.calls.Load() < 16*5 {
-		t.Fatalf("expected at least %d transport calls, got %d", 16*5, tr.calls.Load())
+	if calls.Load() < 16*5 {
+		t.Fatalf("expected at least %d transport calls, got %d", 16*5, calls.Load())
 	}
 }
 
 func TestClient_IsConnectedDoesNotBlockOnSlowCall(t *testing.T) {
-	tr := &slowTransport{release: make(chan struct{})}
-	d := &fakeDialer{queue: []dialResult{{t: tr}}}
-	c := newTestClient(d)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.Start(ctx)
-	if !waitFor(100*time.Millisecond, c.IsConnected) {
-		t.Fatal("client never reported connected")
+	release := make(chan struct{})
+	tr := newFakeTransport()
+	var once sync.Once
+	entered := make(chan struct{})
+	tr.onExec = func(line string) {
+		if strings.HasPrefix(line, "serverinfo") {
+			once.Do(func() { close(entered) })
+			<-release
+		}
 	}
+	c, _ := startConnected(t, tr)
+	defer close(release)
 
-	go func() { _, _ = c.Version() }()
-	defer close(tr.release)
+	go func() { _, _ = c.ServerInfo() }()
+	<-entered // the slow command now holds the call lock
 
 	done := make(chan bool, 1)
 	go func() { done <- c.IsConnected() }()
@@ -294,13 +391,38 @@ func TestClient_IsConnectedDoesNotBlockOnSlowCall(t *testing.T) {
 	}
 }
 
-// slowTransport blocks Version until release is closed.
-type slowTransport struct {
-	fakeTransport
-	release chan struct{}
+func TestConn_ExecAndQueryErrors(t *testing.T) {
+	tr := newFakeTransport()
+	d := &fakeDialer{queue: []dialResult{{t: tr}}}
+	conn, err := connectWith(context.Background(), Config{}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := conn.Version()
+	if err != nil || v.Version != "6.0.0-beta13.1" {
+		t.Fatalf("Version: %+v, %v", v, err)
+	}
+
+	tr.setErr("servergroupdel", &QueryError{ID: ErrIDPermissionDenied, Msg: "insufficient client permissions"})
+	_, err = conn.Exec(NewCommand("servergroupdel").Arg("sgid", 6).Arg("force", true))
+	if !IsQueryError(err, ErrIDPermissionDenied) {
+		t.Fatalf("expected permission-denied QueryError, got %v", err)
+	}
+
+	if err := conn.Close(); err != nil || !tr.isClosed() {
+		t.Fatalf("Close: %v, closed=%v", err, tr.isClosed())
+	}
 }
 
-func (s *slowTransport) Version() (VersionInfo, error) {
-	<-s.release
-	return VersionInfo{}, nil
+// waitFor polls cond every 5ms up to d. Returns true if cond ever returned true.
+func waitFor(d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return cond()
 }
