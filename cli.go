@@ -23,7 +23,8 @@ Commands:
   healthcheck   Probe the local HTTP server's /healthz (used by Docker HEALTHCHECK)
   backup        Export channels, server groups, channel groups and their
                 permissions to a JSON backup file.
-                  -o FILE    write to FILE (default: stdout)
+                  -o FILE    write to FILE (default: stdout, which must be
+                             redirected; with docker compose exec use -T)
                   -rate N    max ServerQuery commands per second (default 2;
                              0 = unlimited, only if this host is on the
                              TeamSpeak query allowlist)
@@ -73,20 +74,20 @@ func runQuery(args []string) int {
 	defer conn.Close()
 
 	if len(args) > 0 {
-		rows, err := conn.ExecRaw(strings.Join(args, " "))
+		rows, err := ts.NewPacer(conn, ts.DefaultRate).Exec(ts.RawCommand(strings.Join(args, " ")))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "query:", err)
 			return 1
 		}
 		return writeJSON(os.Stdout, rowsOrEmpty(rows), true)
 	}
-	return queryLines(conn, os.Stdin, os.Stdout)
+	return queryLines(ts.NewPacer(conn, ts.DefaultRate), os.Stdin, os.Stdout)
 }
 
 // queryLines runs each non-empty, non-comment ('#') line of r and writes one
 // JSON object per command to w. Query errors are reported per line and do
 // not stop processing; a transport error does.
-func queryLines(conn *ts.Conn, r io.Reader, w io.Writer) int {
+func queryLines(conn ts.Execer, r io.Reader, w io.Writer) int {
 	type result struct {
 		Cmd   string         `json:"cmd"`
 		Rows  []ts.Row       `json:"rows,omitempty"`
@@ -102,7 +103,7 @@ func queryLines(conn *ts.Conn, r io.Reader, w io.Writer) int {
 			continue
 		}
 		res := result{Cmd: line}
-		rows, err := conn.ExecRaw(line)
+		rows, err := conn.Exec(ts.RawCommand(line))
 		var qe *ts.QueryError
 		switch {
 		case err == nil:

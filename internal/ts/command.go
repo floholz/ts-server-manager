@@ -20,6 +20,7 @@ type Command struct {
 	name    string
 	groups  [][]param
 	options []string
+	raw     string // set by RawCommand: sent verbatim
 }
 
 type param struct {
@@ -29,6 +30,17 @@ type param struct {
 // NewCommand starts a command with the given name (e.g. "channellist").
 func NewCommand(name string) *Command {
 	return &Command{name: name, groups: [][]param{nil}}
+}
+
+// RawCommand wraps a command line that is already in ServerQuery syntax
+// (values escaped by the caller) so it can go through the same Execer
+// chain, e.g. a Pacer. Arg, Next and Option have no effect on it. Intended
+// for the interactive `query` subcommand; code should build commands with
+// NewCommand.
+func RawCommand(line string) *Command {
+	line = strings.TrimSpace(line)
+	name, _, _ := strings.Cut(line, " ")
+	return &Command{name: name, groups: [][]param{nil}, raw: line}
 }
 
 // Arg adds key=val to the current parameter group. Booleans are sent as
@@ -76,6 +88,9 @@ func (c *Command) Name() string { return c.name }
 
 // String renders the command line, without a trailing newline.
 func (c *Command) String() string {
+	if c.raw != "" {
+		return c.raw
+	}
 	var b strings.Builder
 	b.WriteString(c.name)
 

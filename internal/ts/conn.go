@@ -2,8 +2,11 @@ package ts
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Conn is a single ServerQuery session without reconnect logic, for
@@ -23,11 +26,57 @@ func Connect(ctx context.Context, cfg Config) (*Conn, error) {
 }
 
 func connectWith(ctx context.Context, cfg Config, d dialer) (*Conn, error) {
-	tr, err := d.dial(ctx, applyDefaults(cfg))
+	return connectRetry(ctx, cfg, d, sleepCtx)
+}
+
+// connectRetry dials once, and once more if the server's connection flood
+// protection asked for a short wait ("ssh: disconnect, reason 11: please
+// wait 1 seconds"), which happens when a command runs right after another
+// one. Long waits mean the IP is blocked; those fail immediately.
+func connectRetry(ctx context.Context, cfg Config, d dialer, sleep func(context.Context, time.Duration) bool) (*Conn, error) {
+	cfg = applyDefaults(cfg)
+	tr, err := d.dial(ctx, cfg)
+	if wait, ok := dialFloodWait(err); ok && wait < maxFloodWait {
+		if !sleep(ctx, wait+time.Second) {
+			return nil, ctx.Err()
+		}
+		tr, err = d.dial(ctx, cfg)
+	}
 	if err != nil {
+		if _, ok := dialFloodWait(err); ok {
+			return nil, fmt.Errorf("%w: connecting was refused: add this host's IP to the "+
+				"TeamSpeak query allowlist (query_ip_allowlist.txt) or wait a few minutes: %v", ErrFlooding, err)
+		}
+		if isHandshakeEOF(err) {
+			return nil, fmt.Errorf("%w (the server closed the connection during the SSH handshake; with TeamSpeak "+
+				"this usually means this IP is temporarily blocked by query flood protection: wait ~10 minutes, "+
+				"or add the IP to query_ip_allowlist.txt)", err)
+		}
 		return nil, err
 	}
 	return &Conn{tr: tr}, nil
+}
+
+func isHandshakeEOF(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "handshake failed") && strings.HasSuffix(s, "EOF")
+}
+
+// dialFloodWait reports whether a dial error is the connection flood
+// protection, and how long it asked to wait.
+func dialFloodWait(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	m := pleaseWaitRe.FindStringSubmatch(err.Error())
+	if m == nil {
+		return 0, false
+	}
+	n, convErr := strconv.Atoi(m[1])
+	if convErr != nil {
+		return 0, false
+	}
+	return time.Duration(n) * time.Second, true
 }
 
 // Exec runs a single command and returns its rows. Error replies from the
@@ -36,17 +85,6 @@ func (c *Conn) Exec(cmd *Command) ([]Row, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return execRows(c.tr, cmd)
-}
-
-// ExecRaw sends line exactly as given (already in ServerQuery syntax, with
-// values escaped by the caller) and returns the parsed rows. Intended for
-// the interactive `query` subcommand; code should use Exec with a Command.
-func (c *Conn) ExecRaw(line string) ([]Row, error) {
-	line = strings.TrimSpace(line)
-	name, _, _ := strings.Cut(line, " ")
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return execLine(c.tr, line, name)
 }
 
 // Version returns the server's version metadata.
