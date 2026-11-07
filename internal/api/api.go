@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/floholz/ts-server-manager/internal/backup"
 	"github.com/floholz/ts-server-manager/internal/dockerhub"
 	"github.com/floholz/ts-server-manager/internal/ts"
 )
@@ -27,9 +28,15 @@ type DockerHubClient interface {
 	Check(ctx context.Context, runningVersion string, forceRefresh bool) (dockerhub.Result, error)
 }
 
+// BackupStatus is the subset of *backup.Scheduler the API depends on.
+type BackupStatus interface {
+	Status() backup.Status
+}
+
 // Register attaches all routes to mux. Wrap the mux with RecoverAndLog
 // (or a chain that includes it) to get request-id and access logging.
-func Register(mux *http.ServeMux, tsClient TSClient, hub DockerHubClient, logger *slog.Logger) {
+// backups may be nil when scheduled backups are disabled.
+func Register(mux *http.ServeMux, tsClient TSClient, hub DockerHubClient, backups BackupStatus, logger *slog.Logger) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 	})
@@ -65,6 +72,19 @@ func Register(mux *http.ServeMux, tsClient TSClient, hub DockerHubClient, logger
 			"clients_max":    info.ClientsMax,
 			"login_name":     info.LoginName,
 		})
+	})
+
+	mux.HandleFunc("GET /api/backup-status", func(w http.ResponseWriter, r *http.Request) {
+		if backups == nil {
+			writeJSON(w, http.StatusOK, backup.Status{Enabled: false, Healthy: true, StatusMsg: "disabled"})
+			return
+		}
+		st := backups.Status()
+		code := http.StatusOK
+		if !st.Healthy {
+			code = http.StatusServiceUnavailable
+		}
+		writeJSON(w, code, st)
 	})
 
 	mux.HandleFunc("GET /api/update-check", func(w http.ResponseWriter, r *http.Request) {

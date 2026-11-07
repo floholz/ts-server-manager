@@ -11,25 +11,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/floholz/ts-server-manager/internal/backup"
 	"github.com/floholz/ts-server-manager/internal/dockerhub"
 	"github.com/floholz/ts-server-manager/internal/ts"
 )
 
 type fakeTS struct {
-	connected bool
-	version   ts.VersionInfo
+	connected  bool
+	version    ts.VersionInfo
 	versionErr error
-	info      ts.ServerInfo
-	infoErr   error
+	info       ts.ServerInfo
+	infoErr    error
 }
 
-func (f *fakeTS) IsConnected() bool                     { return f.connected }
-func (f *fakeTS) Version() (ts.VersionInfo, error)      { return f.version, f.versionErr }
-func (f *fakeTS) ServerInfo() (ts.ServerInfo, error)    { return f.info, f.infoErr }
+func (f *fakeTS) IsConnected() bool                  { return f.connected }
+func (f *fakeTS) Version() (ts.VersionInfo, error)   { return f.version, f.versionErr }
+func (f *fakeTS) ServerInfo() (ts.ServerInfo, error) { return f.info, f.infoErr }
 
 type fakeHub struct {
-	result dockerhub.Result
-	err    error
+	result    dockerhub.Result
+	err       error
 	lastForce bool
 }
 
@@ -41,7 +42,7 @@ func (f *fakeHub) Check(_ context.Context, runningVersion string, force bool) (d
 func newRouter(t *testing.T, ts TSClient, hub DockerHubClient) http.Handler {
 	mux := http.NewServeMux()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	Register(mux, ts, hub, logger)
+	Register(mux, ts, hub, nil, logger)
 	return RecoverAndLog(logger)(mux)
 }
 
@@ -201,3 +202,41 @@ func TestRecoverAndLog_PanicReturnsJSON500(t *testing.T) {
 
 // silence unused-import warnings if test set shrinks during refactor.
 var _ = errors.New
+
+type fakeBackups struct{ st backup.Status }
+
+func (f fakeBackups) Status() backup.Status { return f.st }
+
+func newRouterWithBackups(t *testing.T, b BackupStatus) http.Handler {
+	mux := http.NewServeMux()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	Register(mux, &fakeTS{connected: true}, &fakeHub{}, b, logger)
+	return RecoverAndLog(logger)(mux)
+}
+
+func TestBackupStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		b        BackupStatus
+		wantCode int
+		wantMsg  string
+	}{
+		{"disabled", nil, http.StatusOK, "disabled"},
+		{"healthy", fakeBackups{backup.Status{Enabled: true, Healthy: true, StatusMsg: "ok"}}, http.StatusOK, "ok"},
+		{"failed", fakeBackups{backup.Status{Enabled: true, StatusMsg: "failed: ts: unavailable"}}, http.StatusServiceUnavailable, "failed: ts: unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := doGet(t, newRouterWithBackups(t, tc.b), "/api/backup-status")
+			if rr.Code != tc.wantCode {
+				t.Errorf("status: got %d, want %d", rr.Code, tc.wantCode)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["status_msg"] != tc.wantMsg {
+				t.Errorf("status_msg: %v", body["status_msg"])
+			}
+		})
+	}
+}

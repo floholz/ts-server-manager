@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/floholz/ts-server-manager/internal/api"
+	"github.com/floholz/ts-server-manager/internal/backup"
 	"github.com/floholz/ts-server-manager/internal/config"
 	"github.com/floholz/ts-server-manager/internal/dockerhub"
 	"github.com/floholz/ts-server-manager/internal/ts"
@@ -70,8 +71,28 @@ func runServe() error {
 		TTL:  cfg.UpdateCheckTTL,
 	})
 
+	// Scheduled backups run over the long-lived connection, paced so the
+	// sidecar stays under the query flood limits like the CLI does.
+	var backups api.BackupStatus // stays a nil interface when disabled
+	if cfg.BackupDir != "" {
+		sched, err := backup.NewScheduler(ts.NewPacer(tsClient, cfg.BackupRate), backup.ScheduleConfig{
+			Dir:         cfg.BackupDir,
+			Interval:    cfg.BackupInterval,
+			Keep:        cfg.BackupKeep,
+			ToolVersion: version.Version,
+			Logger:      logger,
+			Ready:       tsClient.IsConnected,
+		})
+		if err != nil {
+			return fmt.Errorf("scheduled backups: %w", err)
+		}
+		logger.Info("backup.scheduled", "dir", cfg.BackupDir, "interval", cfg.BackupInterval.String(), "keep", cfg.BackupKeep)
+		go sched.Run(ctx)
+		backups = sched
+	}
+
 	mux := http.NewServeMux()
-	api.Register(mux, tsClient, hubClient, logger)
+	api.Register(mux, tsClient, hubClient, backups, logger)
 
 	handler := api.RecoverAndLog(logger)(mux)
 

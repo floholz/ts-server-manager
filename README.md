@@ -1,6 +1,12 @@
 # ts-server-manager
 
-A small Go sidecar that holds a long-lived [TeamSpeak 3 ServerQuery](https://yat.qa/ressourcen/server-query-kommandos/) (SSH) connection to a TeamSpeak server and exposes a minimal HTTP API for health checks, server info, and Docker Hub update detection. Designed to run alongside a TeamSpeak server container in the same compose stack.
+A small Go sidecar for TeamSpeak 6 servers. It holds a long-lived [ServerQuery](https://yat.qa/ressourcen/server-query-kommandos/) (SSH) connection and provides:
+
+- a minimal HTTP API for health checks, server info and Docker Hub update detection,
+- scheduled backups of the server's channels, server groups, channel groups and permissions,
+- `backup` and `restore` commands to move that setup to a new server.
+
+Designed to run alongside a TeamSpeak server container in the same compose stack. It talks to TeamSpeak only through ServerQuery, the same protocol TeamSpeak 3 used.
 
 ## Endpoints
 
@@ -10,6 +16,7 @@ A small Go sidecar that holds a long-lived [TeamSpeak 3 ServerQuery](https://yat
 | GET    | `/readyz`             | Readiness — 200 only when the TS connection is live, else 503  |
 | GET    | `/api/server-info`    | Selected vserver metadata via ServerQuery                      |
 | GET    | `/api/update-check`   | Compare running TS version against Docker Hub `latest` digest  |
+| GET    | `/api/backup-status`  | State of scheduled backups — 503 when the last one failed or is stale |
 
 `/api/update-check` accepts `?refresh=1` to bypass the cache.
 
@@ -46,6 +53,25 @@ When the running version's tag isn't published on Docker Hub (e.g. custom builds
 
 `status_msg` is `"up-to-date"` when no update is available, and `"<running> → <latest>"` otherwise. It is meant for notification systems (e.g. Uptime Kuma's JSON-Query monitor) whose templates can only surface the queried JSON value — query `$.status_msg` and compare against `"up-to-date"` to get a one-line update summary embedded in the failure message.
 
+`GET /api/backup-status`
+```json
+{
+  "enabled":               true,
+  "dir":                   "/backups",
+  "interval":              "24h0m0s",
+  "keep":                  14,
+  "last_attempt":          "2026-11-07T20:00:00Z",
+  "last_success":          "2026-11-07T20:00:00Z",
+  "last_file":             "ts-backup-20261107T200000Z.json",
+  "last_duration_seconds": 21.4,
+  "next_run":              "2026-11-08T20:00:00Z",
+  "healthy":               true,
+  "status_msg":            "ok"
+}
+```
+
+`status_msg` is `"ok"`, `"pending: …"` (no backup yet, within the first interval), `"failed: <error>"` or `"stale: last backup … ago"` (older than twice the interval). The endpoint answers 503 whenever `healthy` is false, so a plain HTTP monitor can alert on failed backups. With backups disabled it returns `{"enabled": false, "status_msg": "disabled", ...}` with 200.
+
 ## Quick start
 
 ```bash
@@ -70,6 +96,10 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `LOG_LEVEL`          | `info`                                 | no       | `debug`, `info`, `warn`, `error`       |
 | `DOCKERHUB_REPO`     | `teamspeaksystems/teamspeak6-server`   | no       | Image repo to query for updates        |
 | `UPDATE_CHECK_TTL`   | `15m`                                  | no       | Cache freshness window (Go duration)   |
+| `BACKUP_DIR`         | —                                      | no       | Directory for scheduled backups; empty disables them |
+| `BACKUP_INTERVAL`    | `24h`                                  | no       | Time between backups (Go duration, at least `1m`) |
+| `BACKUP_KEEP`        | `14`                                   | no       | Newest backups to keep; `0` keeps all  |
+| `BACKUP_RATE`        | `2`                                    | no       | ServerQuery commands per second during backups; `0` = unlimited (allowlisted hosts only) |
 
 ## Backup
 
@@ -86,6 +116,23 @@ docker compose exec -T ts-server-manager /ts-server-manager backup > ts-backup.j
 ```
 
 Two backups of an unchanged server are identical apart from `created_at`, so backups can be versioned and diffed to see what changed on a server.
+
+### Scheduled backups
+
+With `BACKUP_DIR` set, the sidecar takes a backup every `BACKUP_INTERVAL` and keeps the newest `BACKUP_KEEP`. The shipped `compose.yaml` and `.env.example` enable this with a named volume mounted at `/backups`:
+
+```yaml
+    volumes:
+      - backups:/backups
+```
+
+- Files are named `ts-backup-<UTC time>.json` (for example `ts-backup-20261107T200000Z.json`) and written atomically with mode 0600. Retention only ever deletes files with that name pattern, so other files in the directory are left alone.
+- The first backup runs right after start, unless the newest existing backup is younger than the interval, so restarts don't cause extra backups.
+- While the TeamSpeak connection is down, the backup waits for it. A failed backup is retried after 10 minutes.
+- The container runs as uid 65532. A named volume works as is; for a bind mount, make the host directory writable for that uid (`chown 65532 ./backups`).
+- `/api/backup-status` reports the outcome; point a monitor at it to get alerted when backups stop working.
+
+Restoring a scheduled backup works like any other: copy it out of the volume (`docker compose cp ts-server-manager:/backups/ts-backup-….json .`) and run `restore` against the target server.
 
 **What a backup contains:** the server's name and settings, channel and group names, topics and descriptions, all permission values, and the server's unique identifier. For password-protected channels it also contains the server's hash of the password. That hash is unsalted within a server, so a weak channel password could be guessed from it offline: keep that in mind before sharing or publishing a backup of a server with protected channels. A channel password cannot be restored from its hash, so keep the passwords themselves too.
 

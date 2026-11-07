@@ -34,7 +34,7 @@ type Config struct {
 	BackoffMax time.Duration
 }
 
-// VersionInfo mirrors the TS3 `version` response.
+// VersionInfo mirrors the ServerQuery `version` response.
 type VersionInfo struct {
 	Version  string
 	Platform string

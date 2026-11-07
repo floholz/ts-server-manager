@@ -87,3 +87,45 @@ func TestLoad_NegativeTTLRejected(t *testing.T) {
 		t.Fatal("expected error for negative TTL")
 	}
 }
+
+func TestLoad_BackupDefaults(t *testing.T) {
+	cfg, err := Load(envFromMap(map[string]string{
+		"TS_HOST": "h", "TS_USER": "u", "TS_PASSWORD": "p",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BackupDir != "" || cfg.BackupInterval != 24*time.Hour || cfg.BackupKeep != 14 || cfg.BackupRate != 2 {
+		t.Errorf("backup defaults: %+v", cfg)
+	}
+}
+
+func TestLoad_BackupValidation(t *testing.T) {
+	base := map[string]string{"TS_HOST": "h", "TS_USER": "u", "TS_PASSWORD": "p"}
+	for _, tc := range []struct {
+		key, val, wantErr string
+	}{
+		{"BACKUP_INTERVAL", "daily", "BACKUP_INTERVAL"},
+		{"BACKUP_INTERVAL", "30s", "at least 1m"},
+		{"BACKUP_KEEP", "-1", "BACKUP_KEEP"},
+		{"BACKUP_KEEP", "x", "BACKUP_KEEP"},
+		{"BACKUP_RATE", "-2", "BACKUP_RATE"},
+	} {
+		env := map[string]string{tc.key: tc.val}
+		for k, v := range base {
+			env[k] = v
+		}
+		_, err := Load(envFromMap(env))
+		if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("%s=%s: got %v, want error containing %q", tc.key, tc.val, err, tc.wantErr)
+		}
+	}
+	env := map[string]string{"BACKUP_DIR": "/backups", "BACKUP_INTERVAL": "6h", "BACKUP_KEEP": "0", "BACKUP_RATE": "0"}
+	for k, v := range base {
+		env[k] = v
+	}
+	cfg, err := Load(envFromMap(env))
+	if err != nil || cfg.BackupDir != "/backups" || cfg.BackupInterval != 6*time.Hour || cfg.BackupKeep != 0 || cfg.BackupRate != 0 {
+		t.Errorf("explicit values: %+v, %v", cfg, err)
+	}
+}

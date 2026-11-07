@@ -2,12 +2,9 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/floholz/ts-server-manager/internal/backup"
@@ -64,7 +61,7 @@ func runBackup(args []string) int {
 			fmt.Fprintln(os.Stderr, "backup: write:", err)
 			return 1
 		}
-	} else if err := writeFileAtomic(*out, func(w io.Writer) error { return backup.Write(w, f) }); err != nil {
+	} else if err := backup.WriteFile(*out, f); err != nil {
 		fmt.Fprintln(os.Stderr, "backup:", err)
 		return 1
 	}
@@ -94,42 +91,4 @@ func printBackupSummary(f *backup.File, out string, took time.Duration) {
 		fmt.Fprintln(os.Stderr, "  note: channel passwords are stored as hashes and cannot be restored directly;"+
 			" keep the passwords somewhere safe and supply them on restore.")
 	}
-}
-
-// writeFileAtomic writes via a temp file in the same directory and renames
-// it into place, so an interrupted backup never leaves a truncated file.
-// The file is created 0600: it contains the full permission setup and
-// channel password hashes.
-func writeFileAtomic(path string, write func(io.Writer) error) (err error) {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmp.Name())
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return fmt.Errorf("chmod: %w", err)
-	}
-	w := bufio.NewWriter(tmp)
-	if err := write(w); err != nil {
-		return fmt.Errorf("write: %w", err)
-	}
-	if err := w.Flush(); err != nil {
-		return fmt.Errorf("write: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("sync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return errors.Join(fmt.Errorf("rename into place: %w", err), os.Remove(tmp.Name()))
-	}
-	return nil
 }
