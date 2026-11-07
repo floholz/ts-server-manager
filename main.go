@@ -20,8 +20,22 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(runHealthcheck())
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "healthcheck":
+			os.Exit(runHealthcheck())
+		case "query":
+			os.Exit(runQuery(os.Args[2:]))
+		case "serve":
+			// explicit form of the default
+		case "-h", "--help", "help":
+			printUsage()
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
+			printUsage()
+			os.Exit(2)
+		}
 	}
 	if err := runServe(); err != nil {
 		fmt.Fprintln(os.Stderr, "fatal:", err)
