@@ -109,8 +109,12 @@ func newLogger(level string) *slog.Logger {
 	)
 }
 
-// runHealthcheck issues a single GET /readyz against the local server and
+// runHealthcheck issues a single GET /healthz against the local server and
 // returns 0 on 200, 1 otherwise. Used by the Dockerfile HEALTHCHECK.
+//
+// It deliberately probes liveness, not readiness: the container is healthy
+// as long as the manager itself is serving, even while the TeamSpeak server
+// is down. TS connectivity is reported separately via /readyz.
 func runHealthcheck() int {
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
@@ -125,7 +129,7 @@ func runHealthcheck() int {
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	url := fmt.Sprintf("http://%s/readyz", net.JoinHostPort(host, port))
+	url := fmt.Sprintf("http://%s/healthz", net.JoinHostPort(host, port))
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get(url)
