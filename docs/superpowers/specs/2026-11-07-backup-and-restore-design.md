@@ -82,7 +82,7 @@ JSON, UTF-8, pretty-printed (stable key and array order so two backups of an unc
     {
       "ref": "c:1",
       "name": "Lobby",
-      "properties": { "channel_topic": "...", "channel_codec": 4, "channel_flag_default": 1, ... },
+      "properties": { "channel_topic": "...", "channel_codec": "4", "channel_flag_default": "1", ... },
       "has_password": false,
       // Present only when has_password is true. Deterministic server-side
       // hash; cannot be written back, but lets restore verify a password the
@@ -103,6 +103,7 @@ Rules:
 - **Only regular groups.** Server groups of type `1` (regular) are exported. Template (`0`) and query (`2`) groups are instance-wide and left alone, which also guarantees restore never touches the query account's own permissions.
 - **Properties: capture wide, restore narrow.** Backup records all properties the server returns for a channel and the server (lossless, future-proof for new TS6 properties). Restore only writes properties on a curated allowlist (Appendix A) and reports any it skipped. Read-only and volatile properties (IDs, UUIDs, file paths, counters, timestamps, uptime) are dropped at backup time via a denylist to keep files diffable.
 - **The server allowlist is curated, not "whatever `serveredit` accepts".** TS6 accepts edits to `virtualserver_port`, `virtualserver_address`, `virtualserver_machine_id`, `virtualserver_status`, `virtualserver_password` and even traffic counters. Restoring those onto a different host could make it unreachable or corrupt it, so they are never written.
+- Property values are stored as the raw ServerQuery strings (`"4"`, not `4`): lossless, and restore sends them back verbatim.
 - `schema_version` is bumped on any incompatible change; restore refuses files with an unknown major schema version.
 
 ## Restore algorithm
@@ -148,7 +149,7 @@ TS6 has two separate limits for query clients whose IP is not in the query allow
 
 Both backup and restore therefore go through a pacer in front of `ts.Conn`:
 
-- **Token bucket**, default 2.5 commands/s with a burst of 3 (`--rate N`; `--rate 0` disables pacing for allowlisted setups). A typical backup (~50 channels, ~15 groups, ~120 commands) takes about 50 s; restore of the same a few minutes.
+- **Fixed spacing**, default 2 commands/s with no burst (`-rate N`; `-rate 0` disables pacing for allowlisted setups). Session setup already uses part of the 10-per-3 s budget, so 2/s leaves headroom. A typical backup (~50 channels, ~15 groups, ~120 commands) takes about a minute; restore of the same a few minutes. Measured: 24 commands in 12 s from a non-allowlisted host with no throttling.
 - **524 handling:** parse `please wait N seconds`. For N < 60, stop sending, sleep N + 1 s, drain the bucket, and retry the same command once. For N ≥ 60, or a second 524 in a row, abort with an error that tells the user to add the manager's IP to the query allowlist (`query_ip_allowlist.txt`) or lower `--rate`.
 - **Batching:** permission commands carry up to 100 items each, so the command count is driven by channels and groups, not permissions.
 
@@ -208,7 +209,7 @@ Done against `teamspeaksystems/teamspeak6-server:6.0.0-beta13.1` on 2026-11-07. 
 1. ~~Serialize all ServerQuery calls~~; ~~Docker healthcheck on `/healthz`~~ (done 2026-11-07).
 2. ~~`internal/ts`: raw `Exec`, query-error vs transport-error split~~ (done 2026-11-07).
 3. ~~Verification against beta13.1~~ (done 2026-11-07, Appendix A).
-4. `internal/backup` model + exporter + `backup` subcommand. Usable on its own from day one.
+4. ~~`internal/backup` model + exporter + `backup` subcommand~~ (done 2026-11-07; verified against beta13.1 from a non-allowlisted host, output deterministic).
 5. Planner + applier for fresh targets, `restore --dry-run`.
 6. New-server detection, wipe, confirmation prompt.
 7. Integration round-trip test; README section on backup/restore, query allowlist and rate.

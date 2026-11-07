@@ -21,6 +21,12 @@ func printUsage() {
 Commands:
   serve         Run the HTTP sidecar (default when no command is given)
   healthcheck   Probe the local HTTP server's /healthz (used by Docker HEALTHCHECK)
+  backup        Export channels, server groups, channel groups and their
+                permissions to a JSON backup file.
+                  -o FILE    write to FILE (default: stdout)
+                  -rate N    max ServerQuery commands per second (default 2;
+                             0 = unlimited, only if this host is on the
+                             TeamSpeak query allowlist)
   query [CMD]   Run raw ServerQuery commands and print the result as JSON.
                 With CMD: run it and print its rows as a JSON array.
                 Without:  read one command per line from stdin and print one

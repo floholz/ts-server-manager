@@ -71,6 +71,32 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `DOCKERHUB_REPO`     | `teamspeaksystems/teamspeak6-server`   | no       | Image repo to query for updates        |
 | `UPDATE_CHECK_TTL`   | `15m`                                  | no       | Cache freshness window (Go duration)   |
 
+## Backup
+
+`ts-server-manager backup` exports the virtual server's channel tree, server groups (roles), channel groups and all their permissions to a portable JSON file. Permissions are stored by name and objects reference each other by file-local refs, so the file does not depend on server-assigned IDs. Restore onto a new server is in progress.
+
+```bash
+# from the running sidecar container (backup goes to stdout)
+docker compose exec ts-server-manager /ts-server-manager backup > ts-backup.json
+
+# or with a local build, straight to a file (created with mode 0600)
+./ts-server-manager backup -o ts-backup.json
+```
+
+Two backups of an unchanged server are identical apart from `created_at`, so backups can be kept in git and diffed.
+
+**Treat backup files as sensitive.** They contain the full permission setup and the server's hashes of channel passwords. A channel password cannot be restored from its hash; keep the passwords themselves somewhere safe.
+
+### Query flood protection
+
+TeamSpeak throttles ServerQuery clients that are not on its query allowlist: by default 10 commands per 3 seconds, with a 10-minute ban for clients that keep going. Backup therefore paces itself to 2 commands per second (about a minute for a typical server) and waits out short throttles. Opening many query connections in quick succession also gets an IP blocked, so backup uses a single connection.
+
+If the manager's IP is on the allowlist (`query_ip_allowlist.txt` in the TeamSpeak data directory), pacing can be turned off with `-rate 0`.
+
+### Raw queries
+
+`ts-server-manager query 'channellist -topic'` runs a raw ServerQuery command and prints the result as JSON. Without an argument it reads one command per line from stdin. Commands are sent verbatim, including ones that modify the server.
+
 ## Local development with TeamSpeak
 
 The repo ships a second compose file that brings up a real TeamSpeak 6 server alongside the manager for local testing:
@@ -110,12 +136,13 @@ The CI workflow at [`.github/workflows/release.yml`](.github/workflows/release.y
 
 ## Architecture
 
-Four loosely-coupled internal packages:
+Five loosely-coupled internal packages:
 
 | Package              | Responsibility                                                                |
 |----------------------|-------------------------------------------------------------------------------|
 | `internal/config`    | Environment-driven configuration with validation                              |
-| `internal/ts`        | Long-lived TS3 ServerQuery client — reconnect, exponential backoff, keepalive |
+| `internal/ts`        | ServerQuery over SSH: raw commands, long-lived reconnecting client, one-shot sessions, flood-aware pacing |
+| `internal/backup`    | Backup file format and exporter                                               |
 | `internal/dockerhub` | Docker Hub digest comparison with a 15-minute in-memory cache                 |
 | `internal/api`       | HTTP handlers, consumer-side interfaces, request-id + access-log middleware   |
 
