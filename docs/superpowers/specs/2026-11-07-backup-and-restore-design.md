@@ -24,7 +24,7 @@
 
 ## Why a custom file rather than a database dump
 
-A DB dump is tied to one server version and one DB engine (SQLite/MariaDB/Postgres), carries internal IDs that conflict on a different instance, and is opaque. A ServerQuery-level export is engine-agnostic, survives TS6 beta upgrades, is human-readable and diffable (it can live in git), and restore goes through the server's own validation.
+A DB dump is tied to one server version and one DB engine (SQLite/MariaDB/Postgres), carries internal IDs that conflict on a different instance, and is opaque. A ServerQuery-level export is engine-agnostic, survives TS6 beta upgrades, is human-readable and diffable (it can be versioned in git), and restore goes through the server's own validation.
 
 ## CLI
 
@@ -168,7 +168,7 @@ The hash is deterministic **per server** but differs between servers (same plain
 - Channels with a password but no supplied one get a **random password** (shown in the report) rather than being left open: silently turning a locked channel into an open one would be a security regression.
 - Password entries that match no channel are reported, to catch typos in paths.
 
-The hash is unsalted within a server, so weak channel passwords in a backup file are open to offline guessing; the README tells users to treat backup files as sensitive.
+The hash is unsalted within a server, so weak channel passwords in a backup file are open to offline guessing; the README lists what a backup contains and points this out.
 
 ## Architecture
 

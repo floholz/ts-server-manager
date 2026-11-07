@@ -85,9 +85,9 @@ docker compose exec -T ts-server-manager /ts-server-manager backup > ts-backup.j
 ./ts-server-manager backup -o ts-backup.json
 ```
 
-Two backups of an unchanged server are identical apart from `created_at`, so backups can be kept in git and diffed.
+Two backups of an unchanged server are identical apart from `created_at`, so backups can be versioned and diffed to see what changed on a server.
 
-**Treat backup files as sensitive.** They contain the full permission setup and the server's hashes of channel passwords. A channel password cannot be restored from its hash; keep the passwords themselves somewhere safe.
+**What a backup contains:** the server's name and settings, channel and group names, topics and descriptions, all permission values, and the server's unique identifier. For password-protected channels it also contains the server's hash of the password. That hash is unsalted within a server, so a weak channel password could be guessed from it offline: keep that in mind before sharing or publishing a backup of a server with protected channels. A channel password cannot be restored from its hash, so keep the passwords themselves too.
 
 ## Restore
 
