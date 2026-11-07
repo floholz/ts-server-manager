@@ -76,8 +76,10 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 `ts-server-manager backup` exports the virtual server's channel tree, server groups (roles), channel groups and all their permissions to a portable JSON file. Permissions are stored by name and objects reference each other by file-local refs, so the file does not depend on server-assigned IDs. `ts-server-manager restore` rebuilds that setup on a new server. Client group memberships, icons and other files are not part of the backup yet.
 
 ```bash
-# from the running sidecar container (backup goes to stdout)
-docker compose exec ts-server-manager /ts-server-manager backup > ts-backup.json
+# from the running sidecar container (backup goes to stdout).
+# -T is required: without it, docker allocates a terminal, which mixes the
+# progress output into the file and converts line endings.
+docker compose exec -T ts-server-manager /ts-server-manager backup > ts-backup.json
 
 # or with a local build, straight to a file (created with mode 0600)
 ./ts-server-manager backup -o ts-backup.json
@@ -90,7 +92,7 @@ Two backups of an unchanged server are identical apart from `created_at`, so bac
 ## Restore
 
 ```bash
-# see exactly what would happen, without changing anything
+# see what would happen, without changing anything
 ts-server-manager restore ts-backup.json -dry-run
 
 # restore, supplying channel passwords (path or ref -> password)
@@ -105,6 +107,8 @@ Restore is meant for a **fresh** server. If the target already has its own chann
 - updates groups that also exist in the backup **in place**, so their members are kept,
 - deletes groups that are not in the backup,
 - overwrites the server settings covered by the backup (never port, address, password or slot count).
+
+A real run usually reports more actions than its dry run: newly created groups and channels come with TeamSpeak's default permissions, which the real run removes and a dry run cannot see yet.
 
 Permissions unknown to the target's TeamSpeak version, and any the server rejects, are skipped and listed in the report. If a restore stops part-way (for example the connection drops), fix the cause and run it again.
 

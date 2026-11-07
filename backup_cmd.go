@@ -28,6 +28,16 @@ func runBackup(args []string) int {
 		return 2
 	}
 
+	// Writing JSON to a terminal is never what the user wants, and inside
+	// `docker compose exec` without -T stdout *is* a terminal: the
+	// redirected file then also gets the progress output and CRLF line
+	// endings. Refuse before connecting.
+	if *out == "" && isTerminal(os.Stdout) {
+		fmt.Fprintln(os.Stderr, "backup: stdout is a terminal; use -o FILE or redirect the output to a file.\n"+
+			"  With docker compose, add -T: docker compose exec -T ts-server-manager /ts-server-manager backup > ts-backup.json")
+		return 2
+	}
+
 	conn, err := dialFromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "backup:", err)
