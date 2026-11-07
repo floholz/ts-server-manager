@@ -28,6 +28,8 @@ func main() {
 			os.Exit(runQuery(os.Args[2:]))
 		case "backup":
 			os.Exit(runBackup(os.Args[2:]))
+		case "restore":
+			os.Exit(runRestore(os.Args[2:]))
 		case "serve":
 			// explicit form of the default
 		case "-h", "--help", "help":

@@ -122,7 +122,7 @@ Restore is two-phase: **plan**, then **apply**. The plan is a list of steps refe
      Type the server name to continue:
      ```
      Non-interactive sessions require `--yes`; without it, restore exits with code 2.
-2. **Wipe** (only when overwriting): delete all non-default channels (`channeldelete force=1`), and all regular server/channel groups that are not referenced as defaults (`servergroupdel force=1`, `channelgroupdel force=1`). Default groups are kept and reused below because the server refuses to delete them.
+2. **Wipe** (only when overwriting): backup groups are first matched to existing regular groups (default pointers, then exact name). Matched groups are **kept and updated in place** in steps 4–5, so their members survive the overwrite (memberships are not part of the backup). Unmatched regular groups are deleted (`servergroupdel force=1`, `channelgroupdel force=1`), except the target's current default groups, which TS6 refuses to delete. All channels except the current default are deleted (top-level channels and the default's children, `channeldelete force=1` removes subtrees); the default channel is replaced in step 8.
 3. **Server settings:** apply allowlisted `virtualserver_*` properties via `serveredit`.
 4. **Server groups:** the backup's default server group maps onto the target's current default group; every other group maps onto an existing regular group with the same name, else is created (`servergroupadd name=…`). For each mapped group: `servergrouprename` if needed, then **replace** its permission set. New groups come with default permissions (`b_group_is_permanent`, `i_group_needed_*_power`), so "replace" means: `servergroupdelperm` everything not in the backup, then add/update the rest.
 5. **Channel groups:** same as server groups, matching the two default pointers (default channel group, default channel admin group) first.
@@ -159,13 +159,16 @@ The README documents the allowlist (recommended for anything beyond small server
 
 TS6 behaves like TS3: `channelinfo` returns the password **hash** (`channel_password`), and writing that value back hashes it a second time. A password cannot be restored from the backup.
 
-The hash is deterministic (same plaintext, same hash, no salt), which enables a better workflow than "restore without a password":
+The hash is deterministic **per server** but differs between servers (same plaintext, different hash on another instance; verified with two beta13.1 containers). So:
 
-- The backup stores `has_password` and `password_hash`.
-- `restore --channel-passwords FILE` accepts a `channel name/path → password` map. Each supplied password is verified by hashing it on the target (create the channel with it, compare `channelinfo`), so a typo is caught instead of silently locking the channel with the wrong password.
-- Channels with a password but no supplied (or a wrong) password are created **with a random password** rather than open, and listed in the report. Silently turning a locked channel into an open one would be a security regression.
+- The backup stores `has_password`, `password_hash`, and the source's `virtualserver_unique_identifier` (`source.server_uid`).
+- `restore -channel-passwords FILE` accepts a JSON object mapping channel path (`"Lobby/Gaming"`) or ref (`"c:5"`) to password. Supplied passwords are always set.
+  - Restoring onto the **same** server (matching `server_uid`): the result is verified against `password_hash`; a mismatch is reported as a likely typo (the supplied password is kept).
+  - Restoring onto **another** server: the report says the password was set but cannot be verified. It never claims a correct password is wrong.
+- Channels with a password but no supplied one get a **random password** (shown in the report) rather than being left open: silently turning a locked channel into an open one would be a security regression.
+- Password entries that match no channel are reported, to catch typos in paths.
 
-The hash is unsalted, so weak channel passwords in a backup file are open to offline guessing; the README tells users to treat backup files as sensitive.
+The hash is unsalted within a server, so weak channel passwords in a backup file are open to offline guessing; the README tells users to treat backup files as sensitive.
 
 ## Architecture
 
@@ -210,8 +213,8 @@ Done against `teamspeaksystems/teamspeak6-server:6.0.0-beta13.1` on 2026-11-07. 
 2. ~~`internal/ts`: raw `Exec`, query-error vs transport-error split~~ (done 2026-11-07).
 3. ~~Verification against beta13.1~~ (done 2026-11-07, Appendix A).
 4. ~~`internal/backup` model + exporter + `backup` subcommand~~ (done 2026-11-07; verified against beta13.1 from a non-allowlisted host, output deterministic).
-5. Planner + applier for fresh targets, `restore --dry-run`.
-6. New-server detection, wipe, confirmation prompt.
+5. ~~Restore for fresh targets, `restore -dry-run`~~ (done 2026-11-07). Dry run and real run share one code path: writes are recorded instead of sent, new IDs become placeholders.
+6. ~~New-server detection, overwrite, confirmation prompt~~ (done 2026-11-07). Verified live: fresh restore into a second beta13.1 container and overwrite of a modified server both reproduce the backup exactly (apart from password hashes, see above).
 7. Integration round-trip test; README section on backup/restore, query allowlist and rate.
 
 ## Appendix A: TS6 verification results (6.0.0-beta13.1, 2026-11-07)
@@ -261,7 +264,7 @@ Run with `ts-server-manager query` against `compose.teamspeak.yaml` (MariaDB bac
 ### Channel passwords
 
 - `channelinfo` returns `channel_password` as a 28-character base64 hash; `channel_flag_password=1`.
-- The hash is deterministic: the same plaintext gives the same hash on the same server (not plain SHA-1).
+- The hash is deterministic on one server (the same plaintext gives the same hash) but **differs between servers**: `s3cret` hashed to `enDElJk5…` on one instance and `yQNENBWE…` on another. Not plain SHA-1.
 - Writing the hash back as `channel_password` hashes it again (different value). **Passwords cannot be restored from the hash.**
 
 ### Writable channel properties (`channeledit` with current value)

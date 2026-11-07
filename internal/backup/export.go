@@ -56,6 +56,7 @@ func Export(q ts.Execer, opts ExportOptions) (*File, error) {
 		TSVersion:  ver["version"],
 		Platform:   ver["platform"],
 		ServerName: si["virtualserver_name"],
+		ServerUID:  si["virtualserver_unique_identifier"],
 	}
 	f.Server.Properties = filterProps(si, volatileServerProp)
 

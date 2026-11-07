@@ -5,7 +5,8 @@
   "source": {
     "ts_version": "6.0.0-beta13.1",
     "platform": "Linux",
-    "server_name": "Example TS"
+    "server_name": "Example TS",
+    "server_uid": "W8SOO/IWcqv911YwiWI6f3Rx0SiESSZ1RvEaatKp48s="
   },
   "server": {
     "properties": {

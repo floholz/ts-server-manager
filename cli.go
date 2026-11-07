@@ -27,6 +27,16 @@ Commands:
                   -rate N    max ServerQuery commands per second (default 2;
                              0 = unlimited, only if this host is on the
                              TeamSpeak query allowlist)
+  restore FILE  Restore a backup onto the selected virtual server. Meant for a
+                fresh server; any other target is overwritten after an
+                explicit confirmation.
+                  -dry-run   show every action without changing anything
+                  -yes       confirm overwriting a non-fresh server
+                  -channel-passwords FILE
+                             JSON object mapping channel path ("Lobby/Gaming")
+                             or ref ("c:5") to its password. Protected
+                             channels without one get a random password.
+                  -rate N    as for backup
   query [CMD]   Run raw ServerQuery commands and print the result as JSON.
                 With CMD: run it and print its rows as a JSON array.
                 Without:  read one command per line from stdin and print one

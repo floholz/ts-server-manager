@@ -15,6 +15,11 @@ import (
 
 var update = flag.Bool("update", false, "rewrite golden files")
 
+// fixtureUID is the unique identifier of the fixture's server. The
+// simulated restore target uses it too unless a test needs a different
+// server (password hashes are server-specific).
+const fixtureUID = "W8SOO/IWcqv911YwiWI6f3Rx0SiESSZ1RvEaatKp48s="
+
 // fakeServer answers commands from a table keyed by the exact command line.
 // Unscripted commands fail, so tests also pin which commands are sent.
 type fakeServer struct {
@@ -49,6 +54,7 @@ func newFixture() *fakeServer {
 		"version": {{"version": "6.0.0-beta13.1", "build": "1790080330", "platform": "Linux"}},
 		"serverinfo": {{
 			"virtualserver_name":                        "Example TS",
+			"virtualserver_unique_identifier":           fixtureUID,
 			"virtualserver_welcomemessage":              "Welcome!",
 			"virtualserver_port":                        "9987",
 			"virtualserver_uptime":                      "4242",

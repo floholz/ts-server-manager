@@ -73,7 +73,7 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 
 ## Backup
 
-`ts-server-manager backup` exports the virtual server's channel tree, server groups (roles), channel groups and all their permissions to a portable JSON file. Permissions are stored by name and objects reference each other by file-local refs, so the file does not depend on server-assigned IDs. Restore onto a new server is in progress.
+`ts-server-manager backup` exports the virtual server's channel tree, server groups (roles), channel groups and all their permissions to a portable JSON file. Permissions are stored by name and objects reference each other by file-local refs, so the file does not depend on server-assigned IDs. `ts-server-manager restore` rebuilds that setup on a new server. Client group memberships, icons and other files are not part of the backup yet.
 
 ```bash
 # from the running sidecar container (backup goes to stdout)
@@ -87,9 +87,30 @@ Two backups of an unchanged server are identical apart from `created_at`, so bac
 
 **Treat backup files as sensitive.** They contain the full permission setup and the server's hashes of channel passwords. A channel password cannot be restored from its hash; keep the passwords themselves somewhere safe.
 
+## Restore
+
+```bash
+# see exactly what would happen, without changing anything
+ts-server-manager restore ts-backup.json -dry-run
+
+# restore, supplying channel passwords (path or ref -> password)
+ts-server-manager restore ts-backup.json -channel-passwords passwords.json
+```
+
+`passwords.json` looks like `{"Lobby/Gaming": "secret", "c:12": "other"}`. Channel passwords can't be recovered from a backup: supply them, or restore will give each protected channel a **random** password (printed in the report) instead of leaving it open. When restoring onto the same server the backup came from, supplied passwords are verified against the backup; on another server they can't be (TeamSpeak's password hashes are server-specific).
+
+Restore is meant for a **fresh** server. If the target already has its own channels or groups, restore explains what it will delete and asks you to type the server name (or pass `-yes` in scripts). An overwrite:
+
+- deletes all existing channels and replaces them with the backup's (clients online are moved to the default channel),
+- updates groups that also exist in the backup **in place**, so their members are kept,
+- deletes groups that are not in the backup,
+- overwrites the server settings covered by the backup (never port, address, password or slot count).
+
+Permissions unknown to the target's TeamSpeak version, and any the server rejects, are skipped and listed in the report. If a restore stops part-way (for example the connection drops), fix the cause and run it again.
+
 ### Query flood protection
 
-TeamSpeak throttles ServerQuery clients that are not on its query allowlist: by default 10 commands per 3 seconds, with a 10-minute ban for clients that keep going. Backup therefore paces itself to 2 commands per second (about a minute for a typical server) and waits out short throttles. Opening many query connections in quick succession also gets an IP blocked, so backup uses a single connection.
+TeamSpeak throttles ServerQuery clients that are not on its query allowlist: by default 10 commands per 3 seconds, with a 10-minute ban for clients that keep going. Backup and restore therefore pace themselves to 2 commands per second (about a minute for a typical backup, a few minutes for a restore) and wait out short throttles. Opening many query connections in quick succession also gets an IP blocked, so backup uses a single connection.
 
 If the manager's IP is on the allowlist (`query_ip_allowlist.txt` in the TeamSpeak data directory), pacing can be turned off with `-rate 0`.
 
@@ -142,7 +163,7 @@ Five loosely-coupled internal packages:
 |----------------------|-------------------------------------------------------------------------------|
 | `internal/config`    | Environment-driven configuration with validation                              |
 | `internal/ts`        | ServerQuery over SSH: raw commands, long-lived reconnecting client, one-shot sessions, flood-aware pacing |
-| `internal/backup`    | Backup file format and exporter                                               |
+| `internal/backup`    | Backup file format, exporter and restore                                      |
 | `internal/dockerhub` | Docker Hub digest comparison with a 15-minute in-memory cache                 |
 | `internal/api`       | HTTP handlers, consumer-side interfaces, request-id + access-log middleware   |
 

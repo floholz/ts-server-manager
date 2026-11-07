@@ -37,6 +37,10 @@ type Source struct {
 	TSVersion  string `json:"ts_version"`
 	Platform   string `json:"platform"`
 	ServerName string `json:"server_name"`
+	// ServerUID is the source's virtualserver_unique_identifier. Channel
+	// password hashes are server-specific, so restore can only verify a
+	// supplied password when the target is the same server.
+	ServerUID string `json:"server_uid,omitempty"`
 }
 
 // Server holds virtual-server-wide settings.
