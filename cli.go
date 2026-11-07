@@ -16,7 +16,7 @@ import (
 )
 
 func printUsage() {
-	fmt.Fprint(os.Stderr, `Usage: ts-server-manager [command]
+	fmt.Fprint(os.Stderr, `Usage: tsm-sidecar [command]
 
 Commands:
   serve         Run the HTTP sidecar (default when no command is given)

@@ -143,7 +143,7 @@ func newLogger(level string) *slog.Logger {
 	}
 	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
 	return slog.New(h).With(
-		slog.String("service.name", "ts-server-manager"),
+		slog.String("service.name", "tsm-sidecar"),
 		slog.String("service.version", version.Version),
 	)
 }

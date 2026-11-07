@@ -1,5 +1,9 @@
 # ts-server-manager
 
+Tools for managing TeamSpeak 6 servers. This repository currently ships **`tsm-sidecar`**; a web manager with admin UI, user statistics and announcements is planned ([plan](docs/superpowers/specs/2026-11-07-web-manager-plan.md)).
+
+## tsm-sidecar
+
 A small Go sidecar for TeamSpeak 6 servers. It holds a long-lived [ServerQuery](https://yat.qa/ressourcen/server-query-kommandos/) (SSH) connection and provides:
 
 - a minimal HTTP API for health checks, server info and Docker Hub update detection,
@@ -103,16 +107,16 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 
 ## Backup
 
-`ts-server-manager backup` exports the virtual server's channel tree, server groups (roles), channel groups and all their permissions to a portable JSON file. Permissions are stored by name and objects reference each other by file-local refs, so the file does not depend on server-assigned IDs. `ts-server-manager restore` rebuilds that setup on a new server. Client group memberships, icons and other files are not part of the backup yet.
+`tsm-sidecar backup` exports the virtual server's channel tree, server groups (roles), channel groups and all their permissions to a portable JSON file. Permissions are stored by name and objects reference each other by file-local refs, so the file does not depend on server-assigned IDs. `tsm-sidecar restore` rebuilds that setup on a new server. Client group memberships, icons and other files are not part of the backup yet.
 
 ```bash
 # from the running sidecar container (backup goes to stdout).
 # -T is required: without it, docker allocates a terminal, which mixes the
 # progress output into the file and converts line endings.
-docker compose exec -T ts-server-manager /ts-server-manager backup > ts-backup.json
+docker compose exec -T tsm-sidecar /tsm-sidecar backup > ts-backup.json
 
 # or with a local build, straight to a file (created with mode 0600)
-./ts-server-manager backup -o ts-backup.json
+./tsm-sidecar backup -o ts-backup.json
 ```
 
 Two backups of an unchanged server are identical apart from `created_at`, so backups can be versioned and diffed to see what changed on a server.
@@ -132,7 +136,7 @@ With `BACKUP_DIR` set, the sidecar takes a backup every `BACKUP_INTERVAL` and ke
 - The container runs as uid 65532. A named volume works as is; for a bind mount, make the host directory writable for that uid (`chown 65532 ./backups`).
 - `/api/backup-status` reports the outcome; point a monitor at it to get alerted when backups stop working.
 
-Restoring a scheduled backup works like any other: copy it out of the volume (`docker compose cp ts-server-manager:/backups/ts-backup-….json .`) and run `restore` against the target server.
+Restoring a scheduled backup works like any other: copy it out of the volume (`docker compose cp tsm-sidecar:/backups/ts-backup-….json .`) and run `restore` against the target server.
 
 **What a backup contains:** the server's name and settings, channel and group names, topics and descriptions, all permission values, and the server's unique identifier. For password-protected channels it also contains the server's hash of the password. That hash is unsalted within a server, so a weak channel password could be guessed from it offline: keep that in mind before sharing or publishing a backup of a server with protected channels. A channel password cannot be restored from its hash, so keep the passwords themselves too.
 
@@ -140,10 +144,10 @@ Restoring a scheduled backup works like any other: copy it out of the volume (`d
 
 ```bash
 # see what would happen, without changing anything
-ts-server-manager restore ts-backup.json -dry-run
+tsm-sidecar restore ts-backup.json -dry-run
 
 # restore, supplying channel passwords (path or ref -> password)
-ts-server-manager restore ts-backup.json -channel-passwords passwords.json
+tsm-sidecar restore ts-backup.json -channel-passwords passwords.json
 ```
 
 `passwords.json` looks like `{"Lobby/Gaming": "secret", "c:12": "other"}`. Channel passwords can't be recovered from a backup: supply them, or restore will give each protected channel a **random** password (printed in the report) instead of leaving it open. When restoring onto the same server the backup came from, supplied passwords are verified against the backup; on another server they can't be (TeamSpeak's password hashes are server-specific).
@@ -167,7 +171,7 @@ If the manager's IP is on the allowlist (`query_ip_allowlist.txt` in the TeamSpe
 
 ### Raw queries
 
-`ts-server-manager query 'channellist -topic'` runs a raw ServerQuery command and prints the result as JSON. Without an argument it reads one command per line from stdin. Commands are sent verbatim, including ones that modify the server.
+`tsm-sidecar query 'channellist -topic'` runs a raw ServerQuery command and prints the result as JSON. Without an argument it reads one command per line from stdin. Commands are sent verbatim, including ones that modify the server.
 
 ## Local development with TeamSpeak
 
@@ -178,7 +182,7 @@ docker compose -f compose.teamspeak.yaml up -d         # start TS + MariaDB
 docker compose up -d                                   # start the manager
 docker logs ts_server | grep token                     # grab the admin token
 # set TS_PASSWORD in .env to the ServerQuery password from the TS logs
-docker compose restart ts-server-manager
+docker compose restart tsm-sidecar
 ```
 
 The TeamSpeak compose file is for development only — do not deploy as-is in production (root DB password, no TLS, etc.).
@@ -186,8 +190,8 @@ The TeamSpeak compose file is for development only — do not deploy as-is in pr
 ### Building locally
 
 ```bash
-go build -o ts-server-manager .
-TS_HOST=localhost TS_USER=serveradmin TS_PASSWORD=... ./ts-server-manager
+go build -o tsm-sidecar .
+TS_HOST=localhost TS_USER=serveradmin TS_PASSWORD=... ./tsm-sidecar
 ```
 
 ### Running the test suite
@@ -199,12 +203,12 @@ go test -race ./...
 ### Container build
 
 ```bash
-docker build -t ts-server-manager:dev \
+docker build -t tsm-sidecar:dev \
   --build-arg VERSION=v0.0.0-dev \
   --build-arg REVISION=$(git rev-parse HEAD) .
 ```
 
-The CI workflow at [`.github/workflows/release.yml`](.github/workflows/release.yml) builds and publishes images to `ghcr.io/floholz/ts-server-manager` on every `v*` tag push.
+The CI workflow at [`.github/workflows/release.yml`](.github/workflows/release.yml) builds and publishes images to `ghcr.io/floholz/tsm-sidecar` on every `v*` tag push.
 
 ## Architecture
 
@@ -225,9 +229,13 @@ Five loosely-coupled internal packages:
 Released versions are pushed to GitHub Container Registry on each `v*` git tag.
 A push of `v1.3.7` produces:
 
-- `ghcr.io/floholz/ts-server-manager:1.3.7`  — exact version
-- `ghcr.io/floholz/ts-server-manager:1`      — major-version channel
-- `ghcr.io/floholz/ts-server-manager:latest` — last published version
+- `ghcr.io/floholz/tsm-sidecar:1.3.7`  — exact version
+- `ghcr.io/floholz/tsm-sidecar:1`      — major-version channel
+- `ghcr.io/floholz/tsm-sidecar:latest` — last published version
+
+The project stays on `v0.x` until the web manager is ready for `v1`; until then, minor versions may contain breaking changes.
+
+**Renamed in v0.3.0:** the image was `ghcr.io/floholz/ts-server-manager` (binary `/ts-server-manager`, compose service `ts-server-manager`) up to v0.2.1. It is now `ghcr.io/floholz/tsm-sidecar` with the binary at `/tsm-sidecar`. The old image name will later be used by the web manager. To migrate, change the `image:` line (and any `docker compose exec … /ts-server-manager` commands) in your compose setup.
 
 ## License
 

@@ -1,8 +1,8 @@
 services:
-  ts-server-manager:
+  tsm-sidecar:
     build: .
-    image: ts-server-manager:latest
-    container_name: ts-server-manager
+    image: tsm-sidecar:latest
+    container_name: tsm-sidecar
     env_file: .env
     restart: unless-stopped
     ports:

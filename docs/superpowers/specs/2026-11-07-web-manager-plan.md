@@ -15,7 +15,7 @@ The name promises more: actually *managing* a TeamSpeak server through a web int
 |---|---|---|
 | Purpose | Health, update check, scheduled backups, backup/restore CLI | Web UI with admin login, stats, broadcasts, automation |
 | Footprint | One small binary, no database, no UI | One binary with an embedded database and web UI, one data volume |
-| Image name | to be decided (renamed from `ts-server-manager`, see below) | to be decided |
+| Image name | `ghcr.io/floholz/tsm-sidecar` (renamed from `ts-server-manager` in v0.3.0) | to be decided; likely takes over `ghcr.io/floholz/ts-server-manager` |
 | Status | Feature-complete after scheduled backups (v0.3.0) | New |
 
 - Both live in this repository and share `internal/ts` (ServerQuery connection, pacing, flood handling) and `internal/backup`.
@@ -92,7 +92,7 @@ Track who is on the server, how long, and in which state.
 
 ## Open decisions
 
-- **Names** for the sidecar image and the web manager image (and whether the repository name stays `ts-server-manager`).
+- **Name** of the web manager image (the sidecar is `tsm-sidecar` since v0.3.0; the repository stays `ts-server-manager`).
 - **Frontend framework** for the web UI.
 - **Update mechanism:** Docker socket, orchestration webhook, or notify-only (depends on the infra rework).
 - **Stats retention defaults** and what is shown to whom (admins only, or a public "who's online / leaderboard" page).
