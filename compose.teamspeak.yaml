@@ -21,7 +21,7 @@ services:
 
     ts_server:
         container_name: ts_server
-        image: teamspeaksystems/teamspeak6-server:v6.0.0-beta8
+        image: teamspeaksystems/teamspeak6-server:6.0.0-beta13.1
         restart: unless-stopped
         depends_on:
             ts_db:
