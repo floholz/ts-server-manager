@@ -11,14 +11,22 @@ import (
 // Client is a long-lived TeamSpeak ServerQuery client wrapper.
 //
 // Start a single instance per process; it connects in the background and
-// reconnects automatically on transport failure. Concurrent calls are
-// serialized through an internal mutex (the underlying ts3.Client is not
-// thread-safe).
+// reconnects automatically on transport failure.
+//
+// The underlying ts3.Client is not safe for concurrent use: all callers
+// share a single response channel, so two in-flight commands can receive
+// each other's replies. Every command (handler calls and the keepalive)
+// therefore runs under callMu. State (the current transport) is guarded by
+// the separate mu so IsConnected never blocks behind a slow query.
 type Client struct {
 	cfg    Config
 	dialer dialer
 	logger *slog.Logger
 
+	// callMu serializes all commands sent over the transport.
+	callMu sync.Mutex
+
+	// mu guards tr.
 	mu sync.Mutex
 	tr transport
 
@@ -85,57 +93,75 @@ func (c *Client) IsConnected() bool {
 	return c.tr != nil
 }
 
-// Version returns the cached TS version metadata, querying the live
-// connection. Returns ErrUnavailable if not connected or the call fails
-// at the transport layer.
+// Version returns the TS version metadata, querying the live connection.
+// Returns ErrUnavailable if not connected or the call fails at the
+// transport layer.
 func (c *Client) Version() (VersionInfo, error) {
-	tr := c.currentTransport()
-	if tr == nil {
-		return VersionInfo{}, ErrUnavailable
-	}
-	v, err := tr.Version()
-	if err != nil {
-		c.markUnavailable("Version", err)
-		return VersionInfo{}, fmt.Errorf("%w: version: %v", ErrUnavailable, err)
-	}
-	return v, nil
+	var v VersionInfo
+	err := c.withTransport("Version", func(tr transport) error {
+		var err error
+		v, err = tr.Version()
+		if err != nil {
+			return fmt.Errorf("version: %w", err)
+		}
+		return nil
+	})
+	return v, err
 }
 
 // ServerInfo aggregates `version`, `whoami`, and `serverinfo` into the
-// public ServerInfo type. ErrUnavailable is returned when not connected
-// or any call fails at the transport layer.
+// public ServerInfo type. The three commands run back to back under one
+// lock. ErrUnavailable is returned when not connected or any call fails at
+// the transport layer.
 func (c *Client) ServerInfo() (ServerInfo, error) {
+	var out ServerInfo
+	err := c.withTransport("ServerInfo", func(tr transport) error {
+		v, err := tr.Version()
+		if err != nil {
+			return fmt.Errorf("version: %w", err)
+		}
+		w, err := tr.Whoami()
+		if err != nil {
+			return fmt.Errorf("whoami: %w", err)
+		}
+		si, err := tr.ServerInfo()
+		if err != nil {
+			return fmt.Errorf("serverinfo: %w", err)
+		}
+		out = ServerInfo{
+			Version:       v.Version,
+			Platform:      v.Platform,
+			Build:         v.Build,
+			SID:           w.ServerID,
+			ServerStatus:  w.ServerStatus,
+			ServerName:    si.Name,
+			UptimeSeconds: si.UptimeSeconds,
+			ClientsOnline: si.ClientsOnline,
+			ClientsMax:    si.ClientsMax,
+			LoginName:     w.ClientLoginName,
+		}
+		return nil
+	})
+	return out, err
+}
+
+// withTransport runs fn against the current transport while holding callMu,
+// so no other command can be in flight on the wire. If fn fails, the
+// transport is dropped and the connect loop is signalled to reconnect; the
+// error is returned wrapped in ErrUnavailable.
+func (c *Client) withTransport(where string, fn func(transport) error) error {
+	c.callMu.Lock()
+	defer c.callMu.Unlock()
+
 	tr := c.currentTransport()
 	if tr == nil {
-		return ServerInfo{}, ErrUnavailable
+		return ErrUnavailable
 	}
-	v, err := tr.Version()
-	if err != nil {
-		c.markUnavailable("ServerInfo.version", err)
-		return ServerInfo{}, fmt.Errorf("%w: version: %v", ErrUnavailable, err)
+	if err := fn(tr); err != nil {
+		c.markUnavailable(tr, where, err)
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	w, err := tr.Whoami()
-	if err != nil {
-		c.markUnavailable("ServerInfo.whoami", err)
-		return ServerInfo{}, fmt.Errorf("%w: whoami: %v", ErrUnavailable, err)
-	}
-	si, err := tr.ServerInfo()
-	if err != nil {
-		c.markUnavailable("ServerInfo.serverinfo", err)
-		return ServerInfo{}, fmt.Errorf("%w: serverinfo: %v", ErrUnavailable, err)
-	}
-	return ServerInfo{
-		Version:       v.Version,
-		Platform:      v.Platform,
-		Build:         v.Build,
-		SID:           w.ServerID,
-		ServerStatus:  w.ServerStatus,
-		ServerName:    si.Name,
-		UptimeSeconds: si.UptimeSeconds,
-		ClientsOnline: si.ClientsOnline,
-		ClientsMax:    si.ClientsMax,
-		LoginName:     w.ClientLoginName,
-	}, nil
+	return nil
 }
 
 func (c *Client) currentTransport() transport {
@@ -154,16 +180,20 @@ func (c *Client) setTransport(tr transport) {
 	c.mu.Unlock()
 }
 
-// markUnavailable drops the current transport and signals the connect
-// loop to reconnect. Safe to call from any goroutine.
-func (c *Client) markUnavailable(reason string, err error) {
+// markUnavailable drops failed (if it is still the current transport) and
+// signals the connect loop to reconnect. Comparing against the failed
+// transport ensures a stale failure never tears down a newer connection.
+// Safe to call from any goroutine.
+func (c *Client) markUnavailable(failed transport, reason string, err error) {
 	c.mu.Lock()
-	if c.tr != nil {
+	if c.tr != nil && c.tr == failed {
 		_ = c.tr.Close()
 		c.tr = nil
 	}
 	c.mu.Unlock()
+
 	c.logger.Warn("ts.transport_failed", "where", reason, "err", err.Error())
+
 	select {
 	case c.reconnectCh <- struct{}{}:
 	default:
@@ -189,17 +219,24 @@ func (c *Client) runLoop(ctx context.Context) {
 			continue
 		}
 
+		// Drain any reconnect signal left over from the previous connection
+		// so it doesn't immediately tear down the new one.
+		select {
+		case <-c.reconnectCh:
+		default:
+		}
+
 		c.setTransport(tr)
 		c.logger.Info("ts.connected", "host", c.cfg.Host, "port", c.cfg.Port, "sid", c.cfg.SID)
 		backoff = c.cfg.BackoffMin
 
-		c.runConnected(ctx, tr)
+		c.runConnected(ctx)
 	}
 }
 
 // runConnected ticks the keepalive and watches for reconnect signals.
 // Returns when the connection is no longer usable or ctx is cancelled.
-func (c *Client) runConnected(ctx context.Context, tr transport) {
+func (c *Client) runConnected(ctx context.Context) {
 	t := time.NewTicker(c.cfg.KeepAliveInterval)
 	defer t.Stop()
 	for {
@@ -209,8 +246,13 @@ func (c *Client) runConnected(ctx context.Context, tr transport) {
 		case <-c.reconnectCh:
 			return
 		case <-t.C:
-			if _, err := tr.Version(); err != nil {
-				c.markUnavailable("keepalive", err)
+			// The keepalive goes through withTransport like any other
+			// command, so it can never interleave with a handler call.
+			err := c.withTransport("keepalive", func(tr transport) error {
+				_, err := tr.Version()
+				return err
+			})
+			if err != nil {
 				return
 			}
 		}
